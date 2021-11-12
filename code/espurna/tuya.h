@@ -4,22 +4,14 @@
 
 #pragma once
 
-namespace Tuya {
-    void tuyaSendChannel(unsigned char, unsigned int);
-    void tuyaSendSwitch(unsigned char, bool);
-    void tuyaSetup();
-    void tuyaSetupLight();
-    void tuyaSyncSwitchStatus();
-    void tuyaSetupSwitch();
-}
+namespace tuya {
 
-using Tuya::tuyaSetup;
-using Tuya::tuyaSetupSwitch;
-using Tuya::tuyaSyncSwitchStatus;
-using Tuya::tuyaSendSwitch;
+void setupChannels();
+void sendChannel(unsigned char, unsigned int);
 
-#if LIGHT_PROVIDER == LIGHT_PROVIDER_TUYA
-    using Tuya::tuyaSetupLight;
-    using Tuya::tuyaSendChannel;
-#endif
+void setupSwitches();
+void sendSwitch(unsigned char, bool);
 
+void setup();
+
+} // namespace tuya

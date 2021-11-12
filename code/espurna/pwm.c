@@ -111,7 +111,7 @@ struct timer_regs {
 };
 static struct timer_regs* timer = (struct timer_regs*)(0x60000600);
 
-static void ICACHE_RAM_ATTR
+static void IRAM_ATTR
 pwm_intr_handler(void)
 {
 	if ((pwm_state.current_set[pwm_state.current_phase].off_mask == 0) &&
@@ -122,7 +122,7 @@ pwm_intr_handler(void)
 
 	do {
 		// force write to GPIO registers on each loop
-		asm volatile ("" : : : "memory");
+		__asm__ volatile ("" : : : "memory");
 
 		gpio->out_w1ts = (uint32_t)(pwm_state.current_set[pwm_state.current_phase].on_mask);
 		gpio->out_w1tc = (uint32_t)(pwm_state.current_set[pwm_state.current_phase].off_mask);
@@ -144,7 +144,7 @@ pwm_intr_handler(void)
 			do {
 				ticks -= 1;
 				// stop compiler from optimizing delay loop to noop
-				asm volatile ("" : : : "memory");
+				__asm__ volatile ("" : : : "memory");
 			} while (ticks > 0);
 		}
 

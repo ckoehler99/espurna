@@ -3,18 +3,18 @@
 ESPurna ("spark" in Catalan) is a custom firmware for ESP8285/ESP8266 based smart switches, lights and sensors.
 It uses the Arduino Core for ESP8266 framework and a number of 3rd party libraries.
 
-[![version](https://img.shields.io/badge/version-1.14.1-brightgreen.svg)](CHANGELOG.md)
-[![branch](https://img.shields.io/badge/branch-master-orange.svg)](https://github.com/xoseperez/espurna/tree/master/)
+[![version](https://img.shields.io/badge/version-1.15.0--dev-brightgreen.svg)](CHANGELOG.md)
+[![branch](https://img.shields.io/badge/branch-dev-orange.svg)](https://github.com/xoseperez/espurna/tree/dev/)
 [![license](https://img.shields.io/github/license/xoseperez/espurna.svg)](LICENSE)
-[![travis](https://travis-ci.org/xoseperez/espurna.svg?branch=master)](https://travis-ci.org/xoseperez/espurna)
-[![codacy](https://api.codacy.com/project/badge/Grade/c9496e25cf07434cba786b462cb15f49)](https://www.codacy.com/app/xoseperez/espurna/dashboard)
+[![ci build](https://github.com/xoseperez/espurna/workflows/ESPurna%20build/badge.svg?branch=dev)](https://github.com/xoseperez/espurna/actions)
 <br />
 [![latest master build](https://img.shields.io/github/release/xoseperez/espurna/all.svg?label=latest%20master%20build)](https://github.com/xoseperez/espurna/releases/latest)
 [![latest dev build](https://img.shields.io/github/release/mcspr/espurna-nightly-builder/all.svg?label=latest%20dev%20build)](https://github.com/mcspr/espurna-nightly-builder/releases)
 [![downloads](https://img.shields.io/github/downloads/xoseperez/espurna/total.svg)](https://github.com/xoseperez/espurna/releases)
 <br />
 [![donate](https://img.shields.io/badge/donate-PayPal-blue.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=xose%2eperez%40gmail%2ecom&lc=US&no_note=0&currency_code=EUR&bn=PP%2dDonationsBF%3abtn_donate_LG%2egif%3aNonHostedGuest)
-[![gitter](https://img.shields.io/gitter/room/tinkermant-cat/espurna.svg)](https://gitter.im/tinkerman-cat/espurna)
+[![gitter](https://img.shields.io/gitter/room/tinkerman-cat/espurna?logo=gitter)](https://gitter.im/tinkerman-cat/espurna)
+[![matrix](https://img.shields.io/gitter/room/tinkerman-cat/espurna?logo=matrix)](https://matrix.to/#/#tinkerman-cat_espurna:gitter.im)
 [![twitter](https://img.shields.io/twitter/follow/xoseperez.svg?style=social)](https://twitter.com/intent/follow?screen_name=xoseperez)
 
 ---
@@ -59,6 +59,7 @@ Since November 2018, Max Prokhorov (**@mcspr**) is also actively working as a co
     * Supports NetBIOS, LLMNR and Netbios (when built with Arduino Core >= 2.4.0) and SSDP (experimental)
 * Switch management
     * Support for **push buttons** and **toggle switches**
+    * Support for **digital** and [**analog**](https://en.wikipedia.org/wiki/Resistor_ladder) buttons
     * Configurable **status on boot** per switch (always ON, always OFF, same as before or toggle)
     * Support for **pulse mode** per switch (normally ON or normally OFF) with configurable time
     * Support for **relay synchronization** (all equal, only one ON, one and only on ON)
@@ -83,6 +84,7 @@ Since November 2018, Max Prokhorov (**@mcspr**) is also actively working as a co
     * Supports MQTT auto-discover feature (switches, lights and sensors)
     * Integration via MQTT Discover or copy-pasting configuration code
 * [**InfluxDB**](https://www.influxdata.com/) integration via HTTP API
+* [**Prometheus**](https://prometheus.io/) metrics integration via HTTP API
 * [**Thingspeak**](https://thingspeak.com/) integration via HTTP API (HTTPS available for custom builds)
 * **Sonoff RF Bridge** support
     * Multiple virtual switches (tested with up to 16)
@@ -93,6 +95,7 @@ Since November 2018, Max Prokhorov (**@mcspr**) is also actively working as a co
     * Environment
         * **DHT11 / DHT12 / DHT22 / DHT21 / AM2301 / Itead's SI7021**
         * **BMP180**, **BMP280** and **BME280** pressure, humidity (BME280) and temperature (BMP280 & BME280) sensor by Bosch
+        * **BME680** pressure, humidity, temperature and gas sensor by Bosch with support for Bosch's proprietary library BSEC for accurate Indoor Air Quality (IAQ) monitoring (⚠️ [learn more](https://github.com/xoseperez/espurna/wiki/Sensors#bme680-environmental-sensor))
         * **TMP35** and **TMP36** analog temperature sensors
         * **MAX6675** temperature sensor
         * **NTC** temperature sensors
@@ -159,6 +162,11 @@ Since November 2018, Max Prokhorov (**@mcspr**) is also actively working as a co
     * Works great behind a secured reverse proxy
 * **RPC API** (enable/disable from web interface)
     * Remote reset the board
+* **RPN Rules - on-device automation**
+    * Relays on/off/toggle
+    * Lights control
+    * Publish / subscribe to MQTT
+    * RF receiver integration
 * **Over-The-Air** (OTA) updates even for 1Mb boards
     * Manually from PlatformIO or Arduino IDE
     * Automatic updates through the [NoFUSS Library](https://bitbucket.org/xoseperez/nofuss)
@@ -171,7 +179,7 @@ Since November 2018, Max Prokhorov (**@mcspr**) is also actively working as a co
     * Shows debug info and allows to run terminal commands
 * **NTP** for time synchronization
     * Supports worldwide time zones
-    * Compatible with DST (EU and USA)
+    * Compatible with DST (based on [POSIX TZ variable](https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html) support)
 * **Unstable system check**
     * Detects unstable system (crashes on boot continuously) and defaults to a stable system
     * Only WiFi AP, OTA and Telnet available if system is flagged as unstable
@@ -183,6 +191,14 @@ Since November 2018, Max Prokhorov (**@mcspr**) is also actively working as a co
     * Extra long click (>10 seconds) to go back to factory settings (only main button)
     * Specific definitions for touch button devices (ESPurna Switch, Sonoff Touch & T1)
 * Configuration stored in different flash sectors to prevent data loss and corruption
+* **Garland** Implementing garland using WS2812 leds
+    * 12 animation modes (include start animation)
+    * Web control for:
+        * ON/OFF, brightness, speed
+    * MQTT control:
+        * ON/OFF, brightness, speed
+        * Animation queue
+        * Animation sequence
 
 ## Notices
 
@@ -262,7 +278,7 @@ Here is the list of supported hardware. For more information please refer to the
 ||||
 |---|---|---|
 |![Itead Sonoff Basic](images/devices/itead-sonoff-basic.jpg)|![Itead Sonoff Dual/Dual R2](images/devices/itead-sonoff-dual.jpg)|![Itead Sonoff TH10/TH16](images/devices/itead-sonoff-th.jpg)|
-|**Itead Sonoff Basic**|**Itead Sonoff Dual/Dual R2**|**Itead Sonoff TH10/TH16**|
+|**Itead Sonoff Basic (including R2 and R3)**|**Itead Sonoff Dual/Dual R2**|**Itead Sonoff TH10/TH16**|
 |![Electrodragon WiFi IOT](images/devices/electrodragon-wifi-iot.jpg)|![OpenEnergyMonitor WiFi MQTT Relay / Thermostat](images/devices/openenergymonitor-mqtt-relay.jpg)||
 |**Electrodragon WiFi IOT**|**OpenEnergyMonitor WiFi MQTT Relay / Thermostat**||
 |![Itead Sonoff 4CH](images/devices/itead-sonoff-4ch.jpg)|![Itead Sonoff 4CH Pro](images/devices/itead-sonoff-4ch-pro.jpg)||

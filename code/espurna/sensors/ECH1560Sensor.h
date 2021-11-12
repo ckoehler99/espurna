@@ -7,10 +7,10 @@
 
 #pragma once
 
-#include "Arduino.h"
 #include "BaseSensor.h"
+#include "BaseEmonSensor.h"
 
-class ECH1560Sensor : public BaseSensor {
+class ECH1560Sensor : public BaseEmonSensor {
 
     public:
 
@@ -18,7 +18,7 @@ class ECH1560Sensor : public BaseSensor {
         // Public
         // ---------------------------------------------------------------------
 
-        ECH1560Sensor(): BaseSensor(), _data() {
+        ECH1560Sensor(): _data() {
             _count = 3;
             _sensor_id = SENSOR_ECH1560_ID;
         }
@@ -60,12 +60,6 @@ class ECH1560Sensor : public BaseSensor {
         }
 
         // ---------------------------------------------------------------------
-
-        void resetEnergy(double value = 0) {
-            _energy = value;
-        }
-
-        // ---------------------------------------------------------------------
         // Sensor API
         // ---------------------------------------------------------------------
 
@@ -91,19 +85,19 @@ class ECH1560Sensor : public BaseSensor {
         // Descriptive name of the sensor
         String description() {
             char buffer[35];
-            snprintf(buffer, sizeof(buffer), "ECH1560 (CLK,SDO) @ GPIO(%u,%u)", _clk, _miso);
+            snprintf(buffer, sizeof(buffer), "ECH1560 (CLK,SDO) @ GPIO(%hhu,%hhu)", _clk, _miso);
             return String(buffer);
         }
 
         // Descriptive name of the slot # index
-        String slot(unsigned char index) {
+        String description(unsigned char index) {
             return description();
         };
 
         // Address of the sensor (it could be the GPIO or I2C address)
         String address(unsigned char index) {
             char buffer[6];
-            snprintf(buffer, sizeof(buffer), "%u:%u", _clk, _miso);
+            snprintf(buffer, sizeof(buffer), "%hhu:%hhu", _clk, _miso);
             return String(buffer);
         }
 
@@ -121,14 +115,11 @@ class ECH1560Sensor : public BaseSensor {
             if (index == 0) return _current;
             if (index == 1) return _voltage;
             if (index == 2) return _apparent;
-            if (index == 3) return _energy;
+            if (index == 3) return getEnergy();
             return 0;
         }
 
-        void ICACHE_RAM_ATTR handleInterrupt(unsigned char gpio) {
-
-            UNUSED(gpio);
-
+        void IRAM_ATTR handleInterrupt(unsigned char) {
             // if we are trying to find the sync-time (CLK goes high for 1-2ms)
             if (_dosync == false) {
 
@@ -270,7 +261,9 @@ class ECH1560Sensor : public BaseSensor {
 
                 static unsigned long last = 0;
                 if (last > 0) {
-                    _energy += (_apparent * (millis() - last) / 1000);
+                    _energy[0] += sensor::Ws {
+                        static_cast<uint32_t>(_apparent * (millis() - last) / 1000)
+                    };
                 }
                 last = millis();
 
@@ -301,7 +294,6 @@ class ECH1560Sensor : public BaseSensor {
         double _apparent = 0;
         double _voltage = 0;
         double _current = 0;
-        double _energy = 0;
 
         unsigned char _data[24];
 
@@ -313,23 +305,23 @@ class ECH1560Sensor : public BaseSensor {
 
 ECH1560Sensor * _ech1560_sensor_instance[10] = {NULL};
 
-void ICACHE_RAM_ATTR _ech1560_sensor_isr(unsigned char gpio) {
+void IRAM_ATTR _ech1560_sensor_isr(unsigned char gpio) {
     unsigned char index = gpio > 5 ? gpio-6 : gpio;
     if (_ech1560_sensor_instance[index]) {
         _ech1560_sensor_instance[index]->handleInterrupt(gpio);
     }
 }
 
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_0() { _ech1560_sensor_isr(0); }
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_1() { _ech1560_sensor_isr(1); }
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_2() { _ech1560_sensor_isr(2); }
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_3() { _ech1560_sensor_isr(3); }
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_4() { _ech1560_sensor_isr(4); }
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_5() { _ech1560_sensor_isr(5); }
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_12() { _ech1560_sensor_isr(12); }
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_13() { _ech1560_sensor_isr(13); }
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_14() { _ech1560_sensor_isr(14); }
-void ICACHE_RAM_ATTR _ech1560_sensor_isr_15() { _ech1560_sensor_isr(15); }
+void IRAM_ATTR _ech1560_sensor_isr_0() { _ech1560_sensor_isr(0); }
+void IRAM_ATTR _ech1560_sensor_isr_1() { _ech1560_sensor_isr(1); }
+void IRAM_ATTR _ech1560_sensor_isr_2() { _ech1560_sensor_isr(2); }
+void IRAM_ATTR _ech1560_sensor_isr_3() { _ech1560_sensor_isr(3); }
+void IRAM_ATTR _ech1560_sensor_isr_4() { _ech1560_sensor_isr(4); }
+void IRAM_ATTR _ech1560_sensor_isr_5() { _ech1560_sensor_isr(5); }
+void IRAM_ATTR _ech1560_sensor_isr_12() { _ech1560_sensor_isr(12); }
+void IRAM_ATTR _ech1560_sensor_isr_13() { _ech1560_sensor_isr(13); }
+void IRAM_ATTR _ech1560_sensor_isr_14() { _ech1560_sensor_isr(14); }
+void IRAM_ATTR _ech1560_sensor_isr_15() { _ech1560_sensor_isr(15); }
 
 static void (*_ech1560_sensor_isr_list[10])() = {
     _ech1560_sensor_isr_0, _ech1560_sensor_isr_1, _ech1560_sensor_isr_2,

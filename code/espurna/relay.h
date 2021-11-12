@@ -8,65 +8,102 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #pragma once
 
-#include <bitset>
-#include "utils.h"
+#include <Arduino.h>
 
-constexpr size_t RELAYS_MAX = 32; 
+#include <cstdint>
+#include <memory>
 
-enum class RelayStatus : unsigned char {
-    OFF = 0,
-    ON = 1,
-    TOGGLE = 2,
-    UNKNOWN = 0xFF
+#include "rpc.h"
+
+constexpr size_t RelaysMax { 32ul };
+
+enum class RelayPulse : uint8_t {
+    None,
+    Off,
+    On
 };
 
-struct RelayMask {
-
-    explicit RelayMask(const String& string) :
-        as_string(string),
-        as_u32(u32fromString(string))
-    {}
-
-    explicit RelayMask(String&& string) :
-        as_string(std::move(string)),
-        as_u32(u32fromString(as_string))
-    {}
-
-    explicit RelayMask(uint32_t value) :
-        as_string(std::move(u32toString(value, 2))),
-        as_u32(value)
-    {}
-
-    explicit RelayMask(std::bitset<RELAYS_MAX> bitset) :
-        RelayMask(bitset.to_ulong())
-    {}
-
-    RelayMask(String&& string, uint32_t value) :
-        as_string(std::move(string)),
-        as_u32(value)
-    {}
-
-    const String as_string;
-    uint32_t as_u32;
-
+enum class RelayLock : uint8_t {
+    None,
+    Off,
+    On
 };
 
-RelayStatus relayParsePayload(const char * payload);
+enum class RelayType : int {
+    Normal,
+    Inverse,
+    Latched,
+    LatchedInverse
+};
 
-bool relayStatus(unsigned char id, bool status, bool report, bool group_report);
-bool relayStatus(unsigned char id, bool status);
-bool relayStatus(unsigned char id);
+enum class RelayMqttTopicMode : int {
+    Normal,
+    Inverse
+};
 
-void relayToggle(unsigned char id, bool report, bool group_report);
-void relayToggle(unsigned char id);
+enum class RelayProvider: int {
+    None,
+    Dummy,
+    Gpio,
+    Dual,
+    Stm
+};
 
-unsigned char relayCount();
+class RelayProviderBase {
+public:
+    RelayProviderBase() = default;
+    virtual ~RelayProviderBase();
+
+    virtual void dump();
+
+    // whether the provider is ready
+    virtual bool setup();
+
+    // status requested at boot
+    virtual void boot(bool status);
+
+    // when 'status' was requested, but target status remains the same or is canceled
+    virtual void notify(bool status);
+
+    // when relay 'status' is changed from target to current
+    virtual void change(bool status) = 0;
+
+    // unique id of the provider
+    virtual const char* id() const = 0;
+};
+
+PayloadStatus relayParsePayload(const char * payload);
+
+bool relayStatus(size_t id, bool status, bool report, bool group_report);
+bool relayStatus(size_t id, bool status);
+
+// gets either current or target status, where current is the status that we are
+// actually in and target is the status we would be, eventually, unless
+// relayStatus(id, relayStatus()) is called
+bool relayStatus(size_t id);
+bool relayStatusTarget(size_t id);
+
+void relayToggle(size_t id, bool report, bool group_report);
+void relayToggle(size_t id);
+
+size_t relayCount();
 
 const String& relayPayloadOn();
 const String& relayPayloadOff();
 const String& relayPayloadToggle();
 
-const char* relayPayload(RelayStatus status);
+const char* relayPayload(PayloadStatus status);
+
+void relayPulse(size_t id);
+void relaySync(size_t id);
+void relaySave(bool persist);
+
+using RelayStatusCallback = void(*)(size_t id, bool status);
+using RelayProviderBasePtr = std::unique_ptr<RelayProviderBase>;
+
+bool relayAdd(RelayProviderBasePtr&& provider);
+void relayOnStatusNotify(RelayStatusCallback);
+void relayOnStatusChange(RelayStatusCallback);
 
 void relaySetupDummy(size_t size, bool reconfigure = false);
-
+void relaySetup();

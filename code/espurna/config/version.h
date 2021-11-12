@@ -1,5 +1,25 @@
+// -----------------------------------------------------------------------------
+// APP NAME AND VERSION
+// -----------------------------------------------------------------------------
+
+#pragma once
+
+#ifndef APP_NAME
 #define APP_NAME                "ESPURNA"
-#define APP_VERSION             "1.14.1"
+#endif
+
+#ifndef APP_VERSION
+#define APP_VERSION             "1.15.0-dev"
+#endif
+
+#ifndef APP_AUTHOR
 #define APP_AUTHOR              "xose.perez@gmail.com"
+#endif
+
+#ifndef APP_WEBSITE
 #define APP_WEBSITE             "http://tinkerman.cat"
-#define CFG_VERSION             3
+#endif
+
+#ifndef CFG_VERSION
+#define CFG_VERSION             10
+#endif

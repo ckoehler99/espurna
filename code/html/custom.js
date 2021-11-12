@@ -1,154 +1,181 @@
-var debug = false;
-var websock;
-var password = false;
-var maxNetworks;
-var messages = [];
-var free_size = 0;
+var Debug = false;
 
-var urls = {};
+class UrlsBase {
+    constructor(root) {
+        this.root = root;
 
-var numChanged = 0;
-var numReboot = 0;
-var numReconnect = 0;
-var numReload = 0;
-var configurationSaved = false;
+        const paths = ["ws", "upgrade", "config", "auth"];
+        paths.forEach((path) => {
+            this[path] = new URL(path, root);
+            this[path].protocol = root.protocol;
+        });
 
-var useWhite = false;
-var useCCT = false;
-
-var now = 0;
-var ago = 0;
-
-<!-- removeIf(!rfm69)-->
-var packets;
-var filters = [];
-<!-- endRemoveIf(!rfm69)-->
-
-<!-- removeIf(!sensor)-->
-var magnitudes = [];
-<!-- endRemoveIf(!sensor)-->
-
-// -----------------------------------------------------------------------------
-// Messages
-// -----------------------------------------------------------------------------
-
-function initMessages() {
-    messages[1]  = "Remote update started";
-    messages[2]  = "OTA update started";
-    messages[3]  = "Error parsing data!";
-    messages[4]  = "The file does not look like a valid configuration backup or is corrupted";
-    messages[5]  = "Changes saved. You should reboot your board now";
-    messages[7]  = "Passwords do not match!";
-    messages[8]  = "Changes saved";
-    messages[9]  = "No changes detected";
-    messages[10] = "Session expired, please reload page...";
-}
-
-<!-- removeIf(!sensor)-->
-function sensorName(id) {
-    var names = [
-        "DHT", "Dallas", "Emon Analog", "Emon ADC121", "Emon ADS1X15",
-        "HLW8012", "V9261F", "ECH1560", "Analog", "Digital",
-        "Events", "PMSX003", "BMX280", "MHZ19", "SI7021",
-        "SHT3X I2C", "BH1750", "PZEM004T", "AM2320 I2C", "GUVAS12SD",
-        "T6613", "TMP3X", "Sonar", "SenseAir", "GeigerTicks", "GeigerCPM",
-        "NTC", "SDS011", "MICS2710", "MICS5525", "VL53L1X", "VEML6075",
-        "EZOPH"
-    ];
-    if (1 <= id && id <= names.length) {
-        return names[id - 1];
+        if (this.root.protocol === "https:") {
+            this.ws.protocol = "wss:";
+        } else {
+            this.ws.protocol = "ws:";
+        }
     }
-    return null;
 }
 
-function magnitudeType(type) {
-    var types = [
-        "Temperature", "Humidity", "Pressure",
-        "Current", "Voltage", "Active Power", "Apparent Power",
-        "Reactive Power", "Power Factor", "Energy", "Energy (delta)",
-        "Analog", "Digital", "Event",
-        "PM1.0", "PM2.5", "PM10", "CO2", "Lux", "UVA", "UVB", "UV Index", "Distance" , "HCHO",
-        "Local Dose Rate", "Local Dose Rate",
-        "Count",
-        "NO2", "CO", "Resistance", "pH"
-    ];
-    if (1 <= type && type <= types.length) {
-        return types[type - 1];
+var Urls = null;
+
+var WebsockPingPong = null;
+var Websock = {
+    send: function() {
+    },
+    close: function() {
     }
-    return null;
+};
+
+class SettingsBase {
+    constructor() {
+        this.counters = {};
+        this.resetCounters();
+        this.saved = false;
+    }
+
+    resetCounters() {
+        this.counters.changed = 0;
+        this.counters.reboot = 0;
+        this.counters.reconnect = 0;
+        this.counters.reload = 0;
+    }
 }
 
-function magnitudeError(error) {
-    var errors = [
-        "OK", "Out of Range", "Warming Up", "Timeout", "Wrong ID",
-        "Data Error", "I2C Error", "GPIO Error", "Calibration error"
-    ];
-    if (0 <= error && error < errors.length) {
-        return errors[error];
-    }
-    return "Error " + error;
-}
-<!-- endRemoveIf(!sensor)-->
+var Settings = new SettingsBase();
+
+var Enumerable = {};
+
+var FreeSize = 0;
+var Now = 0;
+var Ago = 0;
+
+//removeIf(!light)
+var ColorPicker;
+//endRemoveIf(!light)
+
+//removeIf(!rfm69)
+var Rfm69 = {
+    filters: {}
+};
+//endRemoveIf(!rfm69)
+
+//removeIf(!sensor)
+var Magnitudes = [];
+var MagnitudeErrors = {};
+var MagnitudeNames = {};
+var MagnitudeUnits = {};
+var MagnitudeTypePrefixes = {};
+var MagnitudePrefixTypes = {};
+
+//endRemoveIf(!sensor)
 
 // -----------------------------------------------------------------------------
 // Utils
 // -----------------------------------------------------------------------------
 
-$.fn.enterKey = function (fnc) {
-    return this.each(function () {
-        $(this).keypress(function (ev) {
-            var keycode = parseInt(ev.keyCode ? ev.keyCode : ev.which, 10);
-            if (13 === keycode) {
-                return fnc.call(this, ev);
-            }
-        });
+function notifyError(message, source, lineno, colno, error) {
+    let container = document.getElementById("error-notification");
+    if (container.childElementCount > 0) {
+        return;
+    }
+
+    container.style.display = "inherit";
+    container.style.whiteSpace = "pre-wrap";
+
+    let notification = document.createElement("div");
+    notification.classList.add("pure-u-1");
+    notification.classList.add("pure-u-lg-1");
+    if (error) {
+        notification.textContent += error.stack;
+    } else {
+        notification.textContent += message;
+    }
+    notification.textContent += "\n\nFor more info see the Developer Tools console.";
+    container.appendChild(notification);
+
+    return false;
+}
+
+window.onerror = notifyError;
+
+// TODO: per https://www.chromestatus.com/feature/6140064063029248, using <base target="_blank"> should be enough with recent browsers
+// but, side menu needs to be reworked for it to correctly handle panel switching, since it uses <a href="#" ...>
+// TODO: also could be done in htmlparser2 + gulp (even, preferably)
+
+function initExternalLinks() {
+    for (let elem of document.getElementsByClassName("external")) {
+        if (elem.tagName === "A") {
+            elem.setAttribute("target", "_blank");
+            elem.setAttribute("rel", "noopener");
+            elem.setAttribute("tabindex", "-1");
+        }
+    }
+}
+
+function followScroll(elem, threshold) {
+    if (threshold === undefined) {
+        threshold = 90;
+    }
+
+    const offset = (elem.scrollTop + elem.offsetHeight) / elem.scrollHeight * 100;
+    if (!threshold || (offset >= threshold)) {
+        elem.scrollTop = elem.scrollHeight;
+    }
+}
+
+function fromSchema(source, schema) {
+    if (schema.length !== source.length) {
+        throw `Schema mismatch! Expected length ${schema.length} vs. ${source.length}`;
+    }
+
+    var target = {};
+    schema.forEach((key, index) => {
+        target[key] = source[index];
     });
-};
+
+    return target;
+}
 
 function keepTime() {
+    document.querySelector("span[data-key='ago']").textContent = Ago;
+    ++Ago;
 
-    $("span[name='ago']").html(ago);
-    ago++;
+    if (0 === Now) {
+        return;
+    }
 
-    if (0 === now) { return; }
-    var date = new Date(now * 1000);
-    var text = date.toISOString().substring(0, 19).replace("T", " ");
-    $("input[name='now']").val(text);
-    $("span[name='now']").html(text);
-    now++;
+    let text = (new Date(Now * 1000))
+        .toISOString().substring(0, 19)
+        .replace("T", " ");
 
+    document.querySelector("span[data-key='now']").textContent = text;
+    ++Now;
+}
+
+function setUptime(value) {
+    let uptime = parseInt(value, 10);
+
+    let seconds = uptime % 60;
+    uptime = parseInt(uptime / 60, 10);
+
+    let minutes = uptime % 60;
+    uptime = parseInt(uptime / 60, 10);
+
+    let hours = uptime % 24;
+    uptime = parseInt(uptime / 24, 10);
+
+    let days = uptime;
+
+    let container = document.querySelector("span[data-key='uptime']");
+    container.textContent = days + "d " + zeroPad(hours, 2) + "h " + zeroPad(minutes, 2) + "m " + zeroPad(seconds, 2) + "s";
+
+    Ago = 0;
 }
 
 function zeroPad(number, positions) {
     return number.toString().padStart(positions, "0");
-}
-
-function loadTimeZones() {
-
-    var time_zones = [
-        -720, -660, -600, -570, -540,
-        -480, -420, -360, -300, -240,
-        -210, -180, -120, -60, 0,
-        60, 120, 180, 210, 240,
-        270, 300, 330, 345, 360,
-        390, 420, 480, 510, 525,
-        540, 570, 600, 630, 660,
-        720, 765, 780, 840
-    ];
-
-    for (var i in time_zones) {
-        var tz = time_zones[i];
-        var offset = tz >= 0 ? tz : -tz;
-        var text = "GMT" + (tz >= 0 ? "+" : "-") +
-            zeroPad(parseInt(offset / 60, 10), 2) + ":" +
-            zeroPad(offset % 60, 2);
-        $("select[name='ntpOffset']").append(
-            $("<option></option>")
-                .attr("value", tz)
-                .text(text)
-        );
-    }
-
 }
 
 function validatePassword(password) {
@@ -160,158 +187,421 @@ function validatePassword(password) {
     // https://en.wikipedia.org/wiki/Wi-Fi_Protected_Access#Target_users_(authentication_key_distribution)
     // https://github.com/xoseperez/espurna/issues/1151
 
-    var re_password = /^(?=.*[A-Z\d])(?=.*[a-z])[\w~!@#$%^&*\(\)<>,.\?;:{}\[\]\\|]{8,63}$/;
+    const Pattern = /^(?=.*[A-Z\d])(?=.*[a-z])[\w~!@#$%^&*()<>,.?;:{}[\]\\|]{8,63}/;
     return (
         (password !== undefined)
         && (typeof password === "string")
         && (password.length > 0)
-        && re_password.test(password)
-    );
+        && Pattern.test(password));
 }
 
-function validateFormPasswords(form) {
-    var passwords = $("input[name='adminPass1'],input[name='adminPass2']", form);
-    var adminPass1 = passwords.first().val(),
-        adminPass2 = passwords.last().val();
+// Try to validate 'adminPass{0,1}', searching the first form containing both.
+// In case it's default webMode, avoid checking things when both fields are empty (`required === false`)
+function validateFormsPasswords(forms, required) {
+    let [passwords] = Array.from(forms).filter(
+        form => form.elements.adminPass0 && form.elements.adminPass1);
 
-    var formValidity = passwords.first()[0].checkValidity();
-    if (formValidity && (adminPass1.length === 0) && (adminPass2.length === 0)) {
-        return true;
-    }
+    if (passwords) {
+        let first = passwords.elements.adminPass0;
+        let second = passwords.elements.adminPass1;
 
-    var validPass1 = validatePassword(adminPass1),
-        validPass2 = validatePassword(adminPass2);
+        if (!required && !first.value.length && !second.value.length) {
+            return true;
+        }
 
-    if (formValidity && validPass1 && validPass2) {
-        return true;
-    }
+        let firstValid = first.checkValidity() && validatePassword(first.value);
+        let secondValid = second.checkValidity() && validatePassword(second.value);
+        if (firstValid && secondValid) {
+            if (first.value === second.value) {
+                return true;
+            }
 
-    if (!formValidity || (adminPass1.length > 0 && !validPass1)) {
+            alert("Passwords are different!");
+            return false;
+        }
+
         alert("The password you have entered is not valid, it must be 8..63 characters and have at least 1 lowercase and 1 uppercase / number!");
     }
 
-    if (adminPass1 !== adminPass2) {
-        alert("Passwords are different!");
-    }
-
     return false;
 }
 
-function validateFormHostname(form) {
-    // RFCs mandate that a hostname's labels may contain only
-    // the ASCII letters 'a' through 'z' (case-insensitive),
-    // the digits '0' through '9', and the hyphen.
+// Same as above, but only applies to the general settings page.
+// Find the first available form that contains 'hostname' input
+function validateFormsHostname(forms) {
+    // per. [RFC1035](https://datatracker.ietf.org/doc/html/rfc1035)
+    // Hostname may contain:
+    // - the ASCII letters 'a' through 'z' (case-insensitive),
+    // - the digits '0' through '9', and the hyphen.
     // Hostname labels cannot begin or end with a hyphen.
     // No other symbols, punctuation characters, or blank spaces are permitted.
-
-    // Negative lookbehind does not work in Javascript
-    // var re_hostname = new RegExp('^(?!-)[A-Za-z0-9-]{1,31}(?<!-)$');
-
-    var re_hostname = new RegExp('^(?!-)[A-Za-z0-9-]{0,30}[A-Za-z0-9]$');
-
-    var hostname = $("input[name='hostname']", form);
-    if ("true" !== hostname.attr("hasChanged")) {
+    let [hostname] = Array.from(forms).filter(form => form.elements.hostname);
+    if (!hostname) {
         return true;
     }
 
-    if (re_hostname.test(hostname.val())) {
-        return true;
+    // Validation pattern is attached to the element itself, so just check that.
+    // (and, we also re-use the hostname for fallback SSID, thus limited to 1...32 chars instead of 1...63)
+
+    hostname = hostname.elements.hostname;
+    let result = hostname.value.length
+        && (!isChangedElement(hostname) || hostname.checkValidity());
+
+    if (!result) {
+        alert("Hostname cannot be empty and may only contain the ASCII letters ('A' through 'Z' and 'a' through 'z'), the digits '0' through '9', and the hyphen ('-')! They can neither start or end with an hyphen.");
     }
 
-    alert("Hostname cannot be empty and may only contain the ASCII letters ('A' through 'Z' and 'a' through 'z'), the digits '0' through '9', and the hyphen ('-')! They can neither start or end with an hyphen.");
-
-    return false;
+    return result;
 }
 
-function validateForm(form) {
-    return validateFormPasswords(form) && validateFormHostname(form);
+function validateForms(forms) {
+    return validateFormsPasswords(forms) && validateFormsHostname(forms);
 }
 
-// Observe all group settings to selectively update originals based on the current data
-var groupSettingsObserver = new MutationObserver(function(mutations) {
-    mutations.forEach(function(mutation) {
-        // If any new elements are added, set "settings-target" element as changed to forcibly send the data
-        var targets = $(mutation.target).attr("data-settings-target");
-        if (targets !== undefined) {
-            mutation.addedNodes.forEach(function(node) {
-                var overrides = [];
-                targets.split(" ").forEach(function(target) {
-                    var elem = $("[name='" + target + "']", node);
-                    if (!elem.length) return;
+// Right now, group additions happen from:
+// - WebSocket, likely to happen exactly once per connection through processData handler(s). Specific keys trigger functions that append into the container element.
+// - User input. Same functions are triggered, but with an additional event for the container element that causes most recent element to be marked as changed.
+// Removal only happens from user input. MutationObserver will refresh checkboxes and cause everything to be marked as changed.
+//
+// TODO: distinguish 'current' state to avoid sending keys when adding and immediatly removing the latest node?
+// TODO: previous implementation relied on defaultValue and / or jquery $(...).val(), but this does not really work where 'line' only has <select>
 
-                    var value = getValue(elem);
-                    if ((value === null) || (value === elem[0].defaultValue)) {
-                        overrides.push(elem);
-                    }
-                });
-                setOriginalsFromValues($("input,select", node));
-                overrides.forEach(function(elem) {
-                    elem.attr("hasChanged", "true");
-                    if (elem.prop("tagName") === "SELECT") {
-                        elem.prop("value", 0);
-                    }
-                });
-            });
+function groupSettingsHandleUpdate(event) {
+    if (!event.target.children.length) {
+        return;
+    }
+
+    let last = event.target.children[event.target.children.length - 1];
+    for (let target of settingsTargets(event.target)) {
+        let elem = last.querySelector(`[name='${target}']`);
+        if (elem) {
+            setChangedElement(elem);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Settings groups & templates
+// -----------------------------------------------------------------------------
+
+// Styled checkboxes require unique label for=... and input id=..., which are
+// generated based on the current position of the element. When removing the node,
+// elements must be re-enumerated and assigned new id's to remain unique
+// (and avoid having one line's checkbox affecting some other one)
+
+function createCheckboxes(node) {
+    let checkboxes = node.querySelectorAll("input[type='checkbox']");
+    for (let checkbox of checkboxes) {
+        checkbox.id = checkbox.name;
+        checkbox.parentElement.classList.add("toggleWrapper");
+
+        let label = document.createElement("label");
+        label.classList.add("toggle");
+        label.htmlFor = checkbox.id;
+
+        let span = document.createElement("span");
+        span.classList.add("toggle__handler");
+        label.appendChild(span);
+
+        checkbox.parentElement.appendChild(label);
+    }
+}
+
+function updateCheckboxes(node) {
+    for (let id = 0; id < node.childElementCount; ++id) {
+        let schedule = node.children[id];
+        for (let checkbox of schedule.querySelectorAll("input[type='checkbox']")) {
+            let realId = checkbox.name.concat(id);
+            checkbox.setAttribute("id", realId);
+            checkbox.nextElementSibling.setAttribute("for", realId);
+        }
+    }
+}
+
+// Generic parts of the HTML are placed into <template> container, which requires
+// us to 'import' it into the currently loaded page to actually use it.
+// (and notice that document.querySelector(...) won't be able to read inside of these)
+
+function loadTemplate(name) {
+    let template = document.getElementById(`template-${name}`);
+    return document.importNode(template.content, true);
+}
+
+function loadConfigTemplate(id) {
+    let template = loadTemplate(id);
+    for (let elem of template.querySelectorAll("input,select")) {
+        elem.dataset["settingsGroupElement"] = "true";
+    }
+
+    for (let elem of template.querySelectorAll("button.button-del-parent")) {
+        elem.addEventListener("click", delParent);
+    }
+
+    for (let elem of template.querySelectorAll("button.button-more-parent")) {
+        elem.addEventListener("click", moreParent);
+    }
+
+    for (let elem of template.querySelectorAll("select.enumerable")) {
+        initEnumerableSelect(elem, initSelect);
+    }
+
+    createCheckboxes(template);
+    return template;
+}
+
+function mergeTemplate(target, template) {
+    for (let child of Array.from(template.children)) {
+        target.appendChild(child);
+    }
+}
+
+function addFromTemplate(container, template, cfg) {
+    let line = loadConfigTemplate(template);
+    fillTemplateLineFromCfg(line, container.childElementCount, cfg);
+
+    mergeTemplate(container, line);
+}
+
+// Group settings are special elements on the page that represent kv that are indexed in settings
+// Special 'add' element will trigger update on the specified '.settings-group' element id, which
+// needs to have 'settings-group-add' event handler attached to it.
+
+function groupSettingsOnAdd(elementId, listener) {
+    document.getElementById(elementId).addEventListener("settings-group-add", listener);
+}
+
+function groupSettingsAdd(event) {
+    const prefix = "settingsGroupDetail";
+    const elem = event.target;
+
+    // TODO: note that still has the dataset format, thus every hyphen capitalizes the next word
+    let eventInit = {detail: null};
+    for (let key of Object.keys(elem.dataset)) {
+        if (!key.startsWith(prefix)) {
+            continue
+        }
+        if (eventInit.detail === null) {
+            eventInit.detail = {};
         }
 
-        // If anything was removed, forcibly send **all** of the group to avoid having any outdated keys
-        // TODO: hide instead of remove?
-        var changed = $(mutation.target).attr("hasChanged") === "true";
-        if (changed || mutation.removedNodes.length) {
-            $(mutation.target).attr("hasChanged", "true");
-            $("input,select", mutation.target.childNodes).attr("hasChanged", "true");
+        let eventKey = key.replace(prefix, "");
+        eventKey = eventKey[0].toLowerCase() + eventKey.slice(1);
+        eventInit.detail[eventKey] = elem.dataset[key];
+    }
+
+    const group = document.getElementById(elem.dataset["settingsGroup"]);
+    group.dispatchEvent(new CustomEvent("settings-group-add", eventInit));
+}
+
+var GroupSettingsObserver = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+        if (isChangedElement(mutation.target) || mutation.removedNodes.length) {
+            setChangedForNode(mutation.target);
+        }
+
+        if (mutation.removedNodes.length) {
+            updateCheckboxes(mutation.target);
         }
     });
 });
 
-// These fields will always be a list of values
-function isGroupValue(value) {
-    var names = [
-        "ssid", "pass", "gw", "mask", "ip", "dns",
-        "schEnabled", "schSwitch","schAction","schType","schHour","schMinute","schWDs","schUTC",
-        "relayBoot", "relayPulse", "relayTime", "relayLastSch",
-        "mqttGroup", "mqttGroupSync", "relayOnDisc",
-        "dczRelayIdx", "dczMagnitude",
-        "tspkRelay", "tspkMagnitude",
-        "ledMode", "ledRelay",
-        "adminPass",
-        "node", "key", "topic",
-        "rpnRule", "rpnTopic", "rpnName"
-    ];
-    return names.indexOf(value) >= 0;
-}
+// When receiving / returning data, <select multiple=true> <option> values are treated as bitset (u32) indexes (i.e. individual bits that are set)
+// For example 0b101 is translated to ["0", "2"], or 0b1111 is translated to ["0", "1", "2", "3"]
+// Right now only `hbReport` uses such format, but it is not yet clear how such select element should behave when value is not an integer
 
-function getValue(element) {
-
-    if ($(element).attr("type") === "checkbox") {
-        return $(element).prop("checked") ? 1 : 0;
-    } else if ($(element).attr("type") === "radio") {
-        if (!$(element).prop("checked")) {
-            return null;
+function bitsetToSelectedValues(bitset) {
+    let values = [];
+    for (let index = 0; index < 31; ++index) {
+        if (bitset & (1 << index)) {
+            values.push(index.toString());
         }
     }
 
-    return $(element).val();
-
+    return values;
 }
 
-function addValue(data, name, value) {
+function bitsetFromSelectedValues(select) {
+    let result = 0;
+    for (let option of select.selectedOptions) {
+        result |= 1 << parseInt(option.value);
+    }
 
-    if (name in data) {
-        if (!Array.isArray(data[name])) {
-            data[name] = [data[name]];
-        }
-        data[name].push(value);
-    } else if (isGroupValue(name)) {
-        data[name] = [value];
+    return result;
+}
+
+// <select data-original="..."> is read / saved as:
+// - multiple=false -> value string of the selected option
+// - multiple=true -> comma-separated values of all selected options
+//
+// If selectedIndex is -1, it means we never selected anything
+// (TODO: could this actually happen with anything other than empty <select>?)
+
+function stringifySelectedValues(select) {
+    if (select.multiple) {
+        return Array.from(select.selectedOptions)
+            .map(option => option.value)
+            .join(",");
+    } else if (select.selectedIndex >= 0) {
+        return select.options[select.selectedIndex].value;
+    }
+
+    return "";
+}
+
+function elementSelectorListener(selector, event, listener) {
+    for (let elem of document.querySelectorAll(selector)) {
+        elem.addEventListener(event, listener);
+    }
+}
+
+function elementSelectorOnClick(selector, listener) {
+    elementSelectorListener(selector, "click", listener);
+}
+
+function isChangedElement(elem) {
+    return "true" === elem.dataset["changed"];
+}
+
+function setChangedElement(elem) {
+    elem.dataset["changed"] = "true";
+}
+
+function setChangedForNode(node) {
+    setChangedElement(node);
+    for (let elem of node.querySelectorAll("input,select")) {
+        setChangedElement(elem);
+    }
+}
+
+function resetChangedElement(elem) {
+    elem.dataset["changed"] = "false";
+}
+
+function resetChangedGroups() {
+    const elems = document.getElementsByClassName("settings-group");
+    for (let elem of elems) {
+        resetChangedElement(elem);
+    }
+}
+
+function isGroupElement(elem) {
+    return elem.dataset["settingsGroupElement"] !== undefined;
+}
+
+function isIgnoredElement(elem) {
+    return elem.dataset["settingsIngore"] !== undefined;
+}
+
+function settingsTargets(elem) {
+    let targets = elem.dataset["settingsTarget"];
+    if (!targets) {
+        return [];
+    }
+
+    return targets.split(" ");
+}
+
+function stringToBoolean(value) {
+    return (value === "1")
+        || (value === "y")
+        || (value === "yes")
+        || (value === "true")
+        || (value === "on");
+}
+
+function booleanToString(value) {
+    return value ? "true" : "false";
+}
+
+function setInputValue(input, value) {
+    switch (input.type) {
+    case "radio":
+        input.checked = (value === input.value);
+        break;
+    case "checkbox":
+        input.checked =
+            (typeof(value) === "boolean") ? value :
+            (typeof(value) === "string") ? stringToBoolean(value) :
+            (typeof(value) === "number") ? (value !== 0) : false;
+        break;
+    case "text":
+    case "password":
+    case "number":
+        input.value = value;
+        break;
+    }
+}
+
+function setSpanValue(span, value) {
+    if (Array.isArray(value)) {
+        value.forEach((text) => {
+            setSpanValue(span, text);
+            span.appendChild(document.createElement("br"));
+        });
     } else {
-        data[name] = value;
+        let content = "";
+        if (span.attributes.pre) {
+            content += span.attributes.pre.value;
+        }
+        content += value;
+        if (span.attributes.post) {
+            content += span.attributes.post.value;
+        }
+        span.textContent = content;
     }
-
 }
 
-function getData(form, changed, cleanup) {
+function setSelectValue(select, value) {
+    let values = select.multiple
+        ? bitsetToSelectedValues(value)
+        : [value.toString()];
 
+    Array.from(select.options)
+        .filter((option) => values.includes(option.value))
+        .forEach((option) => {
+            option.selected = true;
+        });
+}
+
+// TODO: <input type="radio"> is a special beast, since the actual value is one of 'checked' elements with the same name=... attribute.
+// Right now, WebUI does not use this kind of input, but in case it does this needs a once-over that the actual input value is picked up correctly through all of changed / original comparisons.
+
+// Not all of available forms are used for settings:
+// - terminal input, which is implemented with an input field. it is attributed with `action="none"`, so settings handler never treats it as 'changed'
+// - initial setup. it is shown programatically, but is still available from the global list of forms
+
+function getDataForElement(element) {
+    switch (element.tagName) {
+    case "INPUT":
+        switch (element.type) {
+        case "radio":
+            if (element.checked) {
+                return element.value;
+            }
+            return null;
+        case "checkbox":
+            return element.checked ? 1 : 0;
+        case "number":
+        case "text":
+        case "password":
+        case "hidden":
+        case "range":
+            // notice that we set directly to storage, thus strings are just fine
+            return element.value;
+        }
+        break;
+    case "SELECT":
+        if (element.multiple) {
+            return bitsetFromSelectedValues(element);
+        } else if (element.selectedIndex >= 0) {
+            return element.options[element.selectedIndex].value;
+        }
+    }
+
+    return null;
+}
+
+function getData(forms, changed, cleanup) {
     // Populate two sets of data, ones that had been changed and ones that stayed the same
     var data = {};
     var changed_data = [];
@@ -323,36 +613,50 @@ function getData(form, changed, cleanup) {
         changed = true;
     }
 
-    $("input,select", form).each(function() {
-        if ($(this).attr("data-settings-ignore") === "true") {
-            return;
-        }
-
-        var name = $(this).attr("name");
-
-        var real_name = $(this).attr("data-settings-real-name");
-        if (real_name !== undefined) {
-            name = real_name;
-        }
-
-        var value = getValue(this);
-        if (null !== value) {
-            var haschanged = ("true" === $(this).attr("hasChanged"));
-            var indexed = changed_data.indexOf(name) >= 0;
-
-            if ((haschanged || !changed) && !indexed) {
-                changed_data.push(name);
+    // TODO: <input type="radio"> can be found as both individual elements and as a `RadioNodeList` view.
+    // matching will extract the specific radio element, but will ignore the list b/c it has no tagName
+    // TODO: actually use type="radio" in the WebUI to check whether this works
+    for (let form of forms) {
+        for (let elem of form.elements) {
+            if ((elem.tagName !== "SELECT") && (elem.tagName !== "INPUT")) {
+                continue;
             }
 
-            addValue(data, name, value);
+            if (isIgnoredElement(elem)) {
+                continue;
+            }
+
+            const name = elem.dataset.settingsRealName || elem.name;
+            if (name === undefined) {
+                continue;
+            }
+
+            const value = getDataForElement(elem);
+            if (null !== value) {
+                var indexed = changed_data.indexOf(name) >= 0;
+                if ((isChangedElement(elem) || !changed) && !indexed) {
+                    changed_data.push(name);
+                }
+
+                // make sure to group keys from templates (or, manually flagged as such)
+                if (isGroupElement(elem)) {
+                    if (name in data) {
+                        data[name].push(value);
+                    } else {
+                        data[name] = [value];
+                    }
+                } else {
+                    data[name] = value;
+                }
+            }
         }
-    });
+    }
 
     // Finally, filter out only fields that had changed.
     // Note: We need to preserve dynamic lists like schedules, wifi etc.
     // so we don't accidentally break when user deletes entry in the middle
-    var resulting_data = {};
-    for (var value in data) {
+    const resulting_data = {};
+    for (let value in data) {
         if (changed_data.indexOf(value) >= 0) {
             resulting_data[value] = data[value];
         }
@@ -361,21 +665,16 @@ function getData(form, changed, cleanup) {
     // Hack: clean-up leftover arrays.
     // When empty, the receiving side will prune all keys greater than the current one.
     if (cleanup) {
-        $(".group-settings").each(function() {
-            var haschanged = ("true" === $(this).attr("hasChanged"));
-            if (haschanged && !this.children.length) {
-                var targets = this.dataset.settingsTarget;
-                if (targets === undefined) return;
-
-                targets.split(" ").forEach(function(target) {
+        for (let group of document.getElementsByClassName("settings-group")) {
+            if (isChangedElement(group) && !group.children.length) {
+                settingsTargets(group).forEach((target) => {
                     resulting_data[target] = [];
                 });
             }
-        });
+        }
     }
 
     return resulting_data;
-
 }
 
 function randomString(length, args) {
@@ -398,24 +697,21 @@ function randomString(length, args) {
     var source = new Uint32Array(length);
     var result = new Array(length);
 
-    window.crypto.getRandomValues(source).forEach(function(value, i) {
+    window.crypto.getRandomValues(source).forEach((value, i) => {
         result[i] = mask[value % mask.length];
     });
 
     return result.join("");
 }
 
-function generateAPIKey() {
-    var apikey = randomString(16, {hex: true});
-    $("input[name='apiKey']")
-        .val(apikey)
-        .attr("original", "-".repeat(16))
-        .attr("haschanged", "true");
-    return false;
+function generateApiKey() {
+    let elem = document.forms["form-admin"].elements.apiKey;
+    elem.value = randomString(16, {hex: true});
+    setChangedElement(elem);
 }
 
 function generatePassword() {
-    var password = "";
+    let password = "";
     do {
         password = randomString(10);
     } while (!validatePassword(password));
@@ -423,146 +719,330 @@ function generatePassword() {
     return password;
 }
 
-function toggleVisiblePassword() {
-    var elem = this.previousElementSibling;
+function toggleVisiblePassword(event) {
+    let elem = event.target.previousElementSibling;
     if (elem.type === "password") {
         elem.type = "text";
     } else {
         elem.type = "password";
     }
-    return false;
 }
 
-function doGeneratePassword() {
-    var elems = $("input", $("#formPassword"));
-    elems
-        .val(generatePassword())
-        .attr("haschanged", "true")
-        .each(function() {
-            this.type = "text";
-        });
-    return false;
-}
-
-function getJson(str) {
-    try {
-        return JSON.parse(str);
-    } catch (e) {
-        return false;
+function generatePasswordsForForm(form) {
+    const value = generatePassword();
+    for (let elem of [form.elements.adminPass0, form.elements.adminPass1]) {
+        setChangedElement(elem);
+        elem.type = "text";
+        elem.value = value;
     }
 }
 
-<!-- removeIf(!thermostat)-->
-function checkTempRangeMin() {
-    var min = parseInt($("#tempRangeMinInput").val(), 10);
-    var max = parseInt($("#tempRangeMaxInput").val(), 10);
-    if (min > max - 1) {
-        $("#tempRangeMinInput").val(max - 1);
+function initSetupPassword(form) {
+    elementSelectorOnClick(".button-setup-password", (event) => {
+        event.preventDefault();
+        const forms = [form];
+        if (validateFormsPasswords(forms, true)) {
+            sendConfig(getData(forms, true, false));
+        }
+    });
+    elementSelectorOnClick(".button-generate-password", (event) => {
+        event.preventDefault();
+        generatePasswordsForForm(form);
+    });
+}
+
+function moduleVisible(module) {
+    const style = document.createElement("style");
+    style.setAttribute("type", "text/css");
+    document.head.appendChild(style);
+
+    let pos = style.sheet.rules.length;
+    if (module === "sch") {
+        style.sheet.insertRule(`li.module-${module} { display: inherit; }`, pos++);
+        style.sheet.insertRule(`div.module-${module} { display: flex; }`, pos++);
+    } else {
+        style.sheet.insertRule(`.module-${module} { display: inherit; }`, pos++);
     }
 }
 
-function checkTempRangeMax() {
-    var min = parseInt($("#tempRangeMinInput").val(), 10);
-    var max = parseInt($("#tempRangeMaxInput").val(), 10);
-    if (max < min + 1) {
-        $("#tempRangeMaxInput").val(min + 1);
+// Update <input> and <select> elements that were set externally. Generic change handler will allow to compare with user input,
+// allowing to send configuration in parts instead of all of it at once.
+
+function setOriginalsFromValuesForNode(node, elems) {
+    if (elems === undefined) {
+        elems = [...node.querySelectorAll("input,select")];
     }
-}
 
-function doResetThermostatCounters(ask) {
-    var question = (typeof ask === "undefined" || false === ask) ?
-        null :
-        "Are you sure you want to reset burning counters?";
-    return doAction(question, "thermostat_reset_counters");
-}
-<!-- endRemoveIf(!thermostat)-->
-
-function initSelectGPIO(select) {
-    // TODO: properly lock used GPIOs via locking and apply the mask here
-    var mapping = [
-        [153, "NONE"],
-        [0, "0 (FLASH)"],
-        [1, "1 (U0TXD)"],
-        [2, "2 (U1TXD)"],
-        [3, "3 (U0RXD)"],
-        [4, "4 (SDA)"],
-        [5, "5 (SCL)"],
-        [9, "9 (SDD2)"],
-        [10, "10 (SDD3)"],
-        [12, "12 (MTDI)"],
-        [13, "13 (MTCK)"],
-        [14, "14 (MTMS)"],
-        [15, "15 (MTDO)"],
-        [16, "16 (WAKE)"],
-    ];
-    for (n in mapping) {
-        var elem = $('<option value="' + mapping[n][0] + '">');
-        elem.html(mapping[n][1]);
-        elem.appendTo(select);
+    for (let elem of elems) {
+        switch (elem.tagName) {
+        case "INPUT":
+            if (elem.type === "checkbox") {
+                elem.dataset["original"] = booleanToString(elem.checked);
+            } else {
+                elem.dataset["original"] = elem.value;
+            }
+            break;
+        case "SELECT":
+            elem.dataset["original"] = stringifySelectedValues(elem);
+            break;
+        }
+        resetChangedElement(elem);
     }
-}
-
-
-// -----------------------------------------------------------------------------
-// Actions
-// -----------------------------------------------------------------------------
-
-function send(json) {
-    if (debug) console.log(json);
-    websock.send(json);
-}
-
-function sendAction(action, data) {
-    send(JSON.stringify({action: action, data: data}));
-}
-
-function sendConfig(data) {
-    send(JSON.stringify({config: data}));
 }
 
 function setOriginalsFromValues(elems) {
-    if (typeof elems == "undefined") {
-        elems = $("input,select");
+    setOriginalsFromValuesForNode(document, elems);
+}
+
+// <select> initialization from simple {id: ..., name: ...} that map as <option> value=... and textContent
+// To avoid depending on order of incoming messages, always store real value inside of dataset["original"] and provide a way to re-initialize every 'enumerable' <select> element on the page
+//
+// Notice that <select multiple> input and output format is u32 number, but the 'original' string is comma-separated <option> value=... attributes
+
+function initSelect(select, values) {
+    for (let value of values) {
+        let option = document.createElement("option");
+        option.setAttribute("value", value["id"]);
+        option.textContent = value["name"];
+        select.appendChild(option);
     }
-    elems.each(function() {
-        var value;
-        if ($(this).attr("type") === "checkbox") {
-            value = $(this).prop("checked");
-        } else {
-            value = $(this).val();
+}
+
+function initEnumerableSelect(select, callback) {
+    for (let className of select.classList) {
+        const prefix = "enumerable-";
+        if (className.startsWith(prefix)) {
+            const name = className.replace(prefix, "");
+            if ((Enumerable[name] !== undefined) && Enumerable[name].length) {
+                callback(select, Enumerable[name]);
+            }
+            break;
         }
-        $(this).attr("original", value);
-        hasChanged.call(this);
+    }
+}
+
+function refreshEnumerableSelect(name) {
+    const selector = (name !== undefined)
+        ? `select.enumerable.enumerable-${name}`
+        : "select.enumerable";
+
+    for (let select of document.querySelectorAll(selector)) {
+        initEnumerableSelect(select, (_, enumerable) => {
+            while (select.childElementCount) {
+                select.removeChild(select.firstElementChild);
+            }
+
+            initSelect(select, enumerable);
+
+            const original = select.dataset["original"];
+            if (typeof original === "string" && original.length) {
+                setSelectValue(select, original);
+            }
+        });
+    }
+}
+
+function addEnumerables(name, enumerables) {
+    Enumerable[name] = enumerables;
+    refreshEnumerableSelect(name);
+}
+
+function addSimpleEnumerables(name, prettyName, count) {
+    if (count) {
+        let enumerables = [];
+        for (let id = 0; id < count; ++id) {
+            enumerables.push({"id": id, "name": `${prettyName} #${id}`});
+        }
+
+        addEnumerables(name, enumerables);
+    }
+}
+
+// Handle plain kv pairs when they are already on the page, and don't need special template handlers
+// Notice that <span> uses a custom data attribute data-key=..., instead of name=...
+
+function initGenericKeyValueElement(key, value) {
+    let span = document.querySelector(`span[data-key='${key}']`);
+    if (span) {
+        setSpanValue(span, value);
+    }
+
+    let inputs = [];
+    for (let elem of document.querySelectorAll(`[name='${key}'`)) {
+        switch (elem.tagName) {
+        case "INPUT":
+            setInputValue(elem, value);
+            inputs.push(elem);
+            break;
+        case "SELECT":
+            setSelectValue(elem, value);
+            inputs.push(elem);
+            break;
+        }
+    }
+
+    setOriginalsFromValues(inputs);
+}
+
+// Or, handle special id-counted 'line' that was created from template
+// Optional cfg kv object that will be used to pull values for input / select / span
+//
+// Additional handler for checkbox elements, since we need a document-wide unique id=...
+// (also see {create,update}Checkboxes())
+
+function fillTemplateLineFromCfg(line, id, cfg) {
+    if (cfg === undefined) {
+        cfg = {};
+    }
+
+    for (let elem of line.querySelectorAll("input,select,span")) {
+        let key = elem.name || elem.dataset.key;
+        if (key && (key in cfg)) {
+            switch (elem.tagName) {
+            case "INPUT":
+                setInputValue(elem, cfg[key]);
+                break;
+            case "SELECT":
+                setSelectValue(elem, cfg[key]);
+                break;
+            case "SPAN":
+                setSpanValue(elem, cfg[key]);
+                break;
+            }
+        }
+
+        if (elem.tagName === "INPUT" && elem.type === "checkbox") {
+            const realId = elem.name.concat(id);
+            elem.id = realId;
+            elem.nextElementSibling.htmlFor = realId;
+        }
+    }
+
+    setOriginalsFromValuesForNode(line);
+}
+
+
+function delParent(event) {
+    event.target.parentElement.remove();
+}
+
+function moreElem(container) {
+    for (let elem of container.querySelectorAll(".more")) {
+        elem.style.display = (elem.style.display === "")
+            ? "inherit" : "";
+    }
+}
+
+function moreParent(event) {
+    moreElem(event.target.parentElement.parentElement);
+}
+
+function idForTemplateContainer(container) {
+    let id = container.childElementCount;
+
+    let settingsMax = container.dataset["settingsMax"];
+    if (settingsMax === undefined) {
+        return id;
+    }
+
+    let max = parseInt(settingsMax, 10);
+    if (id < max) {
+        return id;
+    }
+    
+    alert(`Max number of ${container.id} has been reached (${id} out of ${max})`);
+    return -1;
+}
+
+// -----------------------------------------------------------------------------
+// WebSocket Actions
+// -----------------------------------------------------------------------------
+
+function send(payload) {
+    if (Debug) {
+        console.log(payload);
+    }
+    Websock.send(payload);
+}
+
+function sendAction(action, data) {
+    if (data === undefined) {
+        data = {};
+    }
+    send(JSON.stringify({action, data}));
+}
+
+function askSaveSettings(ask) {
+    if (Settings.counters.changed > 0) {
+        return ask("There are pending changes to the settings, continue the operation without saving?");
+    }
+
+    return true;
+}
+
+function askDisconnect(ask) {
+    return ask("Are you sure you want to disconnect from the current WiFi network?");
+}
+
+function askReboot(ask) {
+    return ask("Are you sure you want to reboot the device?");
+}
+
+function askAndCall(questions, callback) {
+    for (let question of questions) {
+        if (!question(window.confirm)) {
+            return;
+        }
+    }
+
+    callback();
+}
+
+function askAndCallReconnect() {
+    askAndCall([askSaveSettings, askDisconnect], () => {
+        sendAction("reconnect");
     });
+}
+
+function askAndCallReboot() {
+    askAndCall([askSaveSettings, askReboot], () => {
+        sendAction("reboot");
+    });
+}
+
+// Settings kv as either {key: value} or {key: [value0, value1, ...etc...]}
+
+function sendConfig(config) {
+    send(JSON.stringify({config}));
 }
 
 function resetOriginals() {
     setOriginalsFromValues();
-    $(".group-settings").attr("haschanged", "false")
-    numReboot = numReconnect = numReload = 0;
-    configurationSaved = false;
+    resetChangedGroups();
+    Settings.resetCounters();
+    Settings.saved = false;
 }
 
-function doReload(milliseconds) {
-    setTimeout(function() {
+function pageReloadIn(milliseconds) {
+    setTimeout(() => {
         window.location.reload();
     }, parseInt(milliseconds, 10));
 }
 
-/**
- * Check a file object to see if it is a valid firmware image
- * The file first byte should be 0xE9
- * @param  {file}       file        File object
- * @param  {Function}   callback    Function to call back with the result
- */
+// Check whether the file object contains some known bytes
+// - handle magic numbers at the start
+// - handle SDK flash modes (and compare with the current one)
+//
+// Result is handled through callback:
+// - success as callback(true)
+// - failure as callback(false)
+
 function checkFirmware(file, callback) {
-
-    var reader = new FileReader();
-
-    reader.onloadend = function(evt) {
-        if (FileReader.DONE === evt.target.readyState) {
-            var magic = evt.target.result.charCodeAt(0);
-            if ((0x1F === magic) && (0x8B === evt.target.result.charCodeAt(1))) {
+    const reader = new FileReader();
+    reader.onloadend = function(event) {
+        if (FileReader.DONE === event.target.readyState) {
+            const magic = event.target.result.charCodeAt(0);
+            if ((0x1F === magic) && (0x8B === event.target.result.charCodeAt(1))) {
                 callback(true);
                 return;
             }
@@ -573,38 +1053,36 @@ function checkFirmware(file, callback) {
                 return;
             }
 
-            var modes = ['QIO', 'QOUT', 'DIO', 'DOUT'];
-            var flash_mode = evt.target.result.charCodeAt(2);
+            const flash_mode = event.target.result.charCodeAt(2);
             if (0x03 !== flash_mode) {
-                var response = window.confirm("Binary image is using " + modes[flash_mode] + " flash mode! Make sure that the device supports it before proceeding.");
-                callback(response);
+                const modes = ['QIO', 'QOUT', 'DIO', 'DOUT'];
+                callback(window.confirm(`Binary image is using ${modes[flash_mode]} flash mode! Make sure that the device supports it before proceeding.`));
             } else {
                 callback(true);
             }
         }
     };
 
-    var blob = file.slice(0, 3);
+    const blob = file.slice(0, 3);
     reader.readAsBinaryString(blob);
-
 }
 
-function doUpgrade() {
+function handleFirmwareUpgrade(event) {
+    event.preventDefault();
 
-    var file = $("input[name='upgrade']")[0].files[0];
-
+    let upgrade = document.querySelector("input[name='upgrade']");
+    let file = upgrade.files[0];
     if (typeof file === "undefined") {
         alert("First you have to select a file from your computer.");
-        return false;
+        return;
     }
 
-    if (file.size > free_size) {
+    if (file.size > FreeSize) {
         alert("Image it too large to fit in the available space for OTA. Consider doing a two-step update.");
-        return false;
+        return;
     }
 
-    checkFirmware(file, function(ok) {
-
+    checkFirmware(file, (ok) => {
         if (!ok) {
             return;
         }
@@ -623,935 +1101,1014 @@ function doUpgrade() {
         xhr.addEventListener("error", network_error, false);
         xhr.addEventListener("abort", network_error, false);
 
-        xhr.addEventListener("load", function(e) {
-            $("#upgrade-progress").hide();
+        let progress = document.getElementById("upgrade-progress");
+        xhr.addEventListener("load", () => {
+            progress.style.display = "none";
             if ("OK" === xhr.responseText) {
                 alert(msg_ok);
-                doReload(5000);
             } else {
                 alert(msg_err + xhr.status.toString() + " " + xhr.statusText + ", " + xhr.responseText);
             }
         }, false);
 
-        xhr.upload.addEventListener("progress", function(e) {
-            $("#upgrade-progress").show();
-            if (e.lengthComputable) {
-                $("progress").attr({ value: e.loaded, max: e.total });
+        xhr.upload.addEventListener("progress", (event) => {
+            progress.style.display = "inherit";
+            if (event.lengthComputable) {
+                progress.value = event.loaded;
+                progress.max = event.total;
             }
         }, false);
 
-        xhr.open("POST", urls.upgrade.href);
+        xhr.open("POST", Urls.upgrade.href);
         xhr.send(data);
-
     });
-
-    return false;
-
 }
 
-function doUpdatePassword() {
-    var form = $("#formPassword");
-    if (validateFormPasswords(form)) {
-        sendConfig(getData(form, true, false));
-    }
-    return false;
-}
-
-function checkChanges() {
-
-    if (numChanged > 0) {
-        var response = window.confirm("Some changes have not been saved yet, do you want to save them first?");
-        if (response) {
-            doUpdate();
-        }
-    }
-
-}
-
-function doAction(question, action) {
-
-    checkChanges();
-
-    if (question) {
-        var response = window.confirm(question);
-        if (false === response) {
-            return false;
-        }
-    }
-
-    sendAction(action, {});
-    doReload(5000);
-    return false;
-
-}
-
-function doReboot(ask) {
-
-    var question = (typeof ask === "undefined" || false === ask) ?
-        null :
-        "Are you sure you want to reboot the device?";
-    return doAction(question, "reboot");
-
-}
-
-function doReconnect(ask) {
-
-    var question = (typeof ask === "undefined" || false === ask) ?
-        null :
-        "Are you sure you want to disconnect from the current WIFI network?";
-    return doAction(question, "reconnect");
-
-}
-
-function doCheckOriginals() {
+function afterSaved() {
     var response;
 
-    if (numReboot > 0) {
+    if (Settings.counters.reboot > 0) {
         response = window.confirm("You have to reboot the board for the changes to take effect, do you want to do it now?");
-        if (response) { doReboot(false); }
-    } else if (numReconnect > 0) {
+        if (response) {
+            sendAction("reboot");
+        }
+    } else if (Settings.counters.reconnect > 0) {
         response = window.confirm("You have to reconnect to the WiFi for the changes to take effect, do you want to do it now?");
-        if (response) { doReconnect(false); }
-    } else if (numReload > 0) {
+        if (response) {
+            sendAction("reconnect");
+        }
+    } else if (Settings.counters.reload > 0) {
         response = window.confirm("You have to reload the page to see the latest changes, do you want to do it now?");
-        if (response) { doReload(0); }
+        if (response) {
+            pageReloadIn(0);
+        }
     }
 
     resetOriginals();
 }
 
-function waitForSave(){
-    if (!configurationSaved) {
-        setTimeout(waitForSave, 1000);
+function waitForSaved(){
+    if (!Settings.saved) {
+        setTimeout(waitForSaved, 1000);
     } else {
-        doCheckOriginals();
+        afterSaved();
     }
 }
 
-function doUpdate() {
-
-    var forms = $(".form-settings");
-    if (validateForm(forms)) {
-
-        // Get data
+function sendConfigFromAllForms() {
+    // Since we have 2-page config, make sure we select the active one
+    let forms = document.getElementsByClassName("form-settings");
+    if (validateForms(forms)) {
         sendConfig(getData(forms));
 
-        // Empty special fields
-        $(".pwrExpected").val(0);
-        $("input[name='snsResetCalibration']").prop("checked", false);
-        $("input[name='pwrResetCalibration']").prop("checked", false);
-        $("input[name='pwrResetE']").prop("checked", false);
+//removeIf(!sensor)
+        // Energy reset is handled via these keys
+        // TODO: replace these with actions, not settings
+        for (let elem of document.getElementsByClassName("pwrExpected")) {
+            elem.value = 0;
+        }
 
-        // Change handling
-        numChanged = 0;
+        for (let form of document.forms) {
+            if (form.elements.snsResetCalibration) {
+                form.elements.snsResetCalibration.checked = false;
+            }
+            if (form.elements.pwrResetCalibration) {
+                form.elements.pwrResetCalibration.checked = false;
+            }
+            if (form.elements.pwrResetE) {
+                form.elements.pwrResetE.checked = false;
+            }
+        }
+//endRemoveIf(!sensor)
 
-        waitForSave();
-
+        Settings.counters.changed = 0;
+        waitForSaved();
     }
 
     return false;
-
 }
 
-function doBackup() {
-    document.getElementById("downloader").src = urls.config.href;
-    return false;
-}
+function handleSettingsFile(event) {
+    event.preventDefault();
 
-function onFileUpload(event) {
-
-    var inputFiles = this.files;
+    const inputFiles = event.target.files;
     if (typeof inputFiles === "undefined" || inputFiles.length === 0) {
         return false;
     }
-    var inputFile = inputFiles[0];
-    this.value = "";
 
-    var response = window.confirm("Previous settings will be overwritten. Are you sure you want to restore this settings?");
-    if (!response) {
+    const inputFile = inputFiles[0];
+    event.target.value = "";
+
+    if (!window.confirm("Previous settings will be overwritten. Are you sure you want to restore from this file?")) {
         return false;
     }
 
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var data = getJson(e.target.result);
-        if (data) {
+    const reader = new FileReader();
+    reader.onload = function(event) {
+        try {
+            var data = JSON.parse(event.target.result);
             sendAction("restore", data);
-        } else {
-            window.alert(messages[4]);
+        } catch (e) {
+            notifyError(null, null, 0, 0, e);
         }
     };
     reader.readAsText(inputFile);
-
-    return false;
-
 }
 
-function doRestore() {
-    if (typeof window.FileReader !== "function") {
-        alert("The file API isn't supported on this browser yet.");
-    } else {
-        $("#uploader").click();
+function resetToFactoryDefaults(event) {
+    event.preventDefault();
+
+    let response = window.confirm("Are you sure you want to erase all settings from the device?");
+    if (response) {
+        sendAction("factory_reset");
     }
-    return false;
-}
-
-function doFactoryReset() {
-    var response = window.confirm("Are you sure you want to restore to factory settings?");
-    if (!response) {
-        return false;
-    }
-    sendAction("factory_reset", {});
-    doReload(5000);
-    return false;
-}
-
-function doToggle(id, value) {
-    sendAction("relay", {id: id, status: value ? 1 : 0 });
-    return false;
-}
-
-function doScan() {
-    $("#scanResult").html("");
-    $("div.scan.loading").show();
-    sendAction("scan", {});
-    return false;
-}
-
-function doHAConfig() {
-    $("#haConfig")
-        .text("")
-        .height(0)
-        .show();
-    sendAction("haconfig", {});
-    return false;
-}
-
-function doDebugCommand() {
-    var el = $("input[name='dbgcmd']");
-    var command = el.val();
-    el.val("");
-    sendAction("dbgcmd", {command: command});
-    return false;
-}
-
-function doDebugClear() {
-    $("#weblog").text("");
-    return false;
-}
-
-<!-- removeIf(!rfm69)-->
-
-function doClearCounts() {
-    sendAction("clear-counts", {});
-    return false;
-}
-
-function doClearMessages() {
-    packets.clear().draw(false);
-    return false;
-}
-
-function doFilter(e) {
-    var index = packets.cell(this).index();
-    if (index == 'undefined') return;
-    var c = index.column;
-    var column = packets.column(c);
-    if (filters[c]) {
-        filters[c] = false;
-        column.search("");
-        $(column.header()).removeClass("filtered");
-    } else {
-        filters[c] = true;
-        var data = packets.row(this).data();
-        if (e.which == 1) {
-            column.search('^' + data[c] + '$', true, false );
-        } else {
-            column.search('^((?!(' + data[c] + ')).)*$', true, false );
-        }
-        $(column.header()).addClass("filtered");
-    }
-    column.draw();
-    return false;
-}
-
-function doClearFilters() {
-    for (var i = 0; i < packets.columns()[0].length; i++) {
-        if (filters[i]) {
-            filters[i] = false;
-            var column = packets.column(i);
-            column.search("");
-            $(column.header()).removeClass("filtered");
-            column.draw();
-        }
-    }
-    return false;
-}
-
-<!-- endRemoveIf(!rfm69)-->
-
-function delParent() {
-    var parent = $(this).parent().parent();
-    $(parent).remove();
 }
 
 // -----------------------------------------------------------------------------
 // Visualization
 // -----------------------------------------------------------------------------
 
-function toggleMenu() {
-    $("#layout").toggleClass("active");
-    $("#menu").toggleClass("active");
-    $("#menuLink").toggleClass("active");
+// ref. vendor/side-menu.css
+
+function toggleMenu(event) {
+    event.preventDefault();
+    event.target.parentElement.classList.toggle("active");
 }
 
-function showPanel() {
-    $(".panel").hide();
-    if ($("#layout").hasClass("active")) { toggleMenu(); }
-    $("#" + $(this).attr("data")).show();
+function showPanel(event) {
+    event.preventDefault();
+
+    for (const panel of document.querySelectorAll(".panel")) {
+        panel.style.display = "none";
+    }
+
+    const layout = document.getElementById("layout");
+    layout.classList.remove("active");
+
+    const panel = event.target.dataset["panel"];
+    document.getElementById(`panel-${panel}`).style.display = "inherit";
 }
 
 // -----------------------------------------------------------------------------
 // Relays & magnitudes mapping
 // -----------------------------------------------------------------------------
 
-function createRelayList(data, container, template_name) {
-
-    var current = $("#" + container + " > div").length;
-    if (current > 0) { return; }
-
-    var template = $("#" + template_name + " .pure-g")[0];
-    for (var i in data) {
-        var line = $(template).clone();
-        $("label", line).html("Switch #" + i);
-        $("input", line).attr("tabindex", 40 + i).val(data[i]);
-        setOriginalsFromValues($("input", line));
-        line.appendTo("#" + container);
+function createRelayList(values, container, template_name) {
+    let target = document.getElementById(container);
+    if (target.childElementCount > 0) {
+        return;
     }
 
+    // TODO: let schema set the settings key
+    let template = loadConfigTemplate(template_name);
+    values.forEach((value, index) => {
+        let line = template.cloneNode(true);
+        line.querySelector("label").textContent = (Enumerable.relay)
+            ? Enumerable.relay[index].name : `Switch #${index}`;
+
+        let input = line.querySelector("input");
+        input.value = value;
+        input.dataset["original"] = value;
+
+        mergeTemplate(target, line);
+    });
 }
 
-<!-- removeIf(!sensor)-->
-function createMagnitudeList(data, container, template_name) {
+//removeIf(!sensor)
 
-    var current = $("#" + container + " > div").length;
-    if (current > 0) { return; }
+function createMagnitudeList(data) {
+    const targetId = `${data.prefix}Magnitudes`;
 
-    var template = $("#" + template_name + " .pure-g")[0];
-    var size = data.size;
+    let target = document.getElementById(targetId);
+    if (target.childElementCount > 0) { return; }
 
-    for (var i=0; i<size; ++i) {
-        var line = $(template).clone();
-        $("label", line).html(magnitudeType(data.type[i]) + " #" + parseInt(data.index[i], 10));
-        $("div.hint", line).html(magnitudes[i].description);
-        $("input", line).attr("tabindex", 40 + i).val(data.idx[i]);
-        setOriginalsFromValues($("input", line));
-        line.appendTo("#" + container);
-    }
+    data.values.forEach((values) => {
+        const entry = fromSchema(values, data.schema);
 
+        let line = loadConfigTemplate("module-magnitude");
+        line.querySelector("label").textContent =
+            `${MagnitudeNames[entry.type]} #${entry.index_global}`;
+        line.querySelector("div.hint").textContent =
+            Magnitudes[entry.index_global].description;
+
+        let input = line.querySelector("input");
+        input.name = `${data.prefix}Magnitude`;
+        input.value = entry.index_module;
+        input.dataset["original"] = input.value;
+
+        mergeTemplate(target, line);
+    });
 }
-<!-- endRemoveIf(!sensor)-->
+
+//endRemoveIf(!sensor)
 
 // -----------------------------------------------------------------------------
 // RPN Rules
 // -----------------------------------------------------------------------------
 
-function addRPNRule() {
-    var template = $("#rpnRuleTemplate .pure-g")[0];
-    var line = $(template).clone();
-    var tabindex = $("#rpnRules > div").length + 100;
-    $(line).find("input").each(function() {
-        $(this).attr("tabindex", tabindex++);
-    });
-    $(line).find("button").on('click', delParent);
-    setOriginalsFromValues($("input", line));
-    line.appendTo("#rpnRules");
+function rpnAddRule(cfg) {
+    addFromTemplate(document.getElementById("rpn-rules"), "rpn-rule", cfg);
 }
 
-function addRPNTopic() {
-    var template = $("#rpnTopicTemplate .pure-g")[0];
-    var line = $(template).clone();
-    var tabindex = $("#rpnTopics > div").length + 120;
-    $(line).find("input").each(function() {
-        $(this).attr("tabindex", tabindex++);
-    });
-    $(line).find("button").on('click', delParent);
-    setOriginalsFromValues($("input", line));
-    line.appendTo("#rpnTopics");
+function rpnAddTopic(cfg) {
+    addFromTemplate(document.getElementById("rpn-topics"), "rpn-topic", cfg);
 }
 
 // -----------------------------------------------------------------------------
 // RFM69
 // -----------------------------------------------------------------------------
 
-<!-- removeIf(!rfm69)-->
+//removeIf(!rfm69)
 
-function addMapping() {
-    var template = $("#nodeTemplate .pure-g")[0];
-    var line = $(template).clone();
-    var tabindex = $("#mapping > div").length * 3 + 50;
-    $(line).find("input").each(function() {
-        $(this).attr("tabindex", tabindex++);
-    });
-    $(line).find("button").on('click', delParent);
-    setOriginalsFromValues($("input", line));
-    line.appendTo("#mapping");
+function rfm69AddMapping(cfg) {
+    addFromTemplate(document.getElementById("rfm69-mapping"), "rfm69-node", cfg);
 }
 
-<!-- endRemoveIf(!rfm69)-->
+function rfm69Messages() {
+    let [body] = document.getElementById("rfm69-messages").tBodies;
+    return body;
+}
+
+function rfm69AddMessage(message) {
+    let timestamp = (new Date()).toLocaleTimeString("en-US", {hour12: false});
+
+    let container = rfm69Messages();
+    let row = container.insertRow();
+    for (let value of [timestamp, ...message]) {
+        let cell = row.insertCell();
+        cell.appendChild(document.createTextNode(value));
+        rfm69FilterRow(Rfm69.filters, row);
+    }
+}
+
+function rfm69ClearCounters() {
+    sendAction("rfm69Clear");
+    return false;
+}
+
+function rfm69ClearMessages() {
+    let container = rfm69Messages();
+    while (container.rows.length) {
+        container.deleteRow(0);
+    }
+    return false;
+}
+
+function rfm69FilterRow(filters, row) {
+    row.style.display = "table-row";
+    for (const [cell, filter] of Object.entries(filters)) {
+        if (row.cells[cell].textContent !== filter) {
+            row.style.display = "none";
+        }
+    }
+}
+
+function rfm69Filter(filters, rows) {
+    for (let row of rows) {
+        rfm69FilterRow(filters, row);
+    }
+}
+
+function rfm69FilterEvent(event) {
+    if (event.target.classList.contains("filtered")) {
+        delete Rfm69.filters[event.target.cellIndex];
+    } else {
+        Rfm69.filters[event.target.cellIndex] = event.target.textContent;
+    }
+    event.target.classList.toggle("filtered");
+
+    rfm69Filter(Rfm69.filters, rfm69Messages().rows);
+}
+
+function rfm69ClearFilters() {
+    let container = rfm69Messages();
+    for (let elem of container.querySelectorAll("filtered")) {
+        elem.classList.remove("filtered");
+    }
+
+    Rfm69.filters = {};
+    rfm69Filter(Rfm69.filters, container.rows);
+}
+
+//endRemoveIf(!rfm69)
+
 
 // -----------------------------------------------------------------------------
 // Wifi
 // -----------------------------------------------------------------------------
 
-function numNetworks() {
-    return $("#networks > div").length;
-}
+function wifiNetworkAdd(cfg, showMore) {
+    let container = document.getElementById("networks");
 
-function delNetwork() {
-    var parent = $(this).parents(".pure-g");
-    $(parent).remove();
-}
-
-function moreNetwork() {
-    var parent = $(this).parents(".pure-g");
-    $(".more", parent).toggle();
-}
-
-function addNetwork(values) {
-
-    var number = numNetworks();
-    if (number >= maxNetworks) {
-        alert("Max number of networks reached");
-        return null;
+    let id = idForTemplateContainer(container);
+    if (id < 0) {
+        return;
     }
 
-    if (values === undefined) {
-        values = {};
+    if (showMore === undefined) {
+        showMore = true;
     }
 
-    var tabindex = 200 + numNetworks * 10;
-    var template = $("#networkTemplate").children();
-    var line = $(template).clone();
-    $(line).find("input").each(function() {
-        $(this).attr("tabindex", tabindex);
-        tabindex++;
-    });
-    $(".password-reveal", line).on("click", toggleVisiblePassword);
-    $(line).find(".button-del-network").on("click", delNetwork);
-    $(line).find(".button-more-network").on("click", moreNetwork);
+    let line = loadConfigTemplate("network-config");
+    fillTemplateLineFromCfg(line, id, cfg);
+    if (showMore) {
+        moreElem(line);
+    }
 
-    Object.entries(values).forEach(function(kv) {
-        $("input[name='" + kv[0] + "']", line).val(kv[1]);
-    });
+    mergeTemplate(container, line);
+    return;
+}
 
-    line.appendTo("#networks");
+function wifiScanResult(values) {
+    let loading = document.querySelector("div.scan.loading");
+    loading.style.display = "none";
 
-    return line;
+    for (let button of document.querySelectorAll(".button-wifi-scan")) {
+        button.disabled = false;
+    }
 
+    let table = document.getElementById("scanResult");
+    table.style.display = "table";
+
+    let [results] = table.tBodies;
+    let row = results.insertRow();
+    for (let value of values) {
+        let cell = row.insertCell();
+        cell.appendChild(document.createTextNode(value));
+    }
+}
+
+function startWifiScan(event) {
+    event.preventDefault();
+
+    let [results] = document.getElementById("scanResult").tBodies;
+    while (results.rows.length) {
+        results.deleteRow(0);
+    }
+
+    let loading = document.querySelector("div.scan.loading");
+    loading.style.display = "inherit";
+
+    for (let button of document.querySelectorAll(".button-wifi-scan")) {
+        button.disabled = true;
+    }
+
+    sendAction("scan");
 }
 
 // -----------------------------------------------------------------------------
-// Relays scheduler
+// Simple LEDs configuration
 // -----------------------------------------------------------------------------
 
-function numSchedules() {
-    return $("#schedules > div").length;
-}
+function ledAdd(cfg) {
+    let container = document.getElementById("leds");
 
-function maxSchedules() {
-    var value = $("#schedules").attr("data-settings-max");
-    return parseInt(value === undefined ? 0 : value, 10);
-}
-
-function delSchedule() {
-    var parent = $(this).parents(".pure-g");
-    $(parent).remove();
-}
-
-function moreSchedule() {
-    var parent = $(this).parents(".pure-g");
-    $("div.more", parent).toggle();
-}
-
-function addSchedule(values) {
-
-    var schedules = numSchedules();
-    if (schedules >= maxSchedules()) {
-        alert("Max number of schedules reached");
-        return null;
+    let id = idForTemplateContainer(container);
+    if (id < 0) {
+        return;
     }
 
-    if (values === undefined) {
-        values = {};
+    let line = loadConfigTemplate("led-config");
+    line.querySelector("span").textContent = id;
+    fillTemplateLineFromCfg(line, id, cfg);
+
+    mergeTemplate(container, line);
+}
+
+// -----------------------------------------------------------------------------
+// Date and time scheduler
+// -----------------------------------------------------------------------------
+
+function schAdd(cfg) {
+    if (cfg.schType === undefined) {
+        return;
     }
 
-    var tabindex = 200 + numSchedules * 10;
-    var template = $("#scheduleTemplate").children();
-    var line = $(template).clone();
+    let container = document.getElementById("schedules");
 
-    var type = (1 === values.schType) ? "switch" : "light";
+    let id = idForTemplateContainer(container);
+    if (id < 0) {
+        return;
+    }
 
-    template = $("#" + type + "ActionTemplate").children();
-    $(line).find("#schActionDiv").append(template.clone());
+    let line = loadConfigTemplate("schedule-config");
 
-    $(line).find("input").each(function() {
-        $(this).attr("tabindex", tabindex);
-        tabindex++;
-    });
-    $(line).find(".button-del-schedule").on("click", delSchedule);
-    $(line).find(".button-more-schedule").on("click", moreSchedule);
+    const type = (cfg.schType === 1) ? "relay" :
+        (cfg.schType === 2) ? "light" :
+        (cfg.schType === 3) ? "curtain" :
+        "none";
+    if (type !== "none") {
+        mergeTemplate(line.querySelector(".schedule-action"),
+            loadConfigTemplate("schedule-action-".concat(type)));
+    }
 
-    var schUTC_id = "schUTC" + (schedules + 1);
-    $(line).find("input[name='schUTC']").prop("id", schUTC_id).next().prop("for", schUTC_id);
-
-    var schEnabled_id = "schEnabled" + (schedules + 1);
-    $(line).find("input[name='schEnabled']").prop("id", schEnabled_id).next().prop("for", schEnabled_id);
-
-    $(line).find("input[type='checkbox']").prop("checked", false);
-
-    Object.entries(values).forEach(function(kv) {
-        var key = kv[0], value = kv[1];
-        $("input[name='" + key + "']", line).val(value);
-        $("select[name='" + key + "']", line).prop("value", value);
-        $("input[type='checkbox'][name='" + key + "']", line).prop("checked", value);
-    });
-    line.appendTo("#schedules");
-
-    return line;
-
+    fillTemplateLineFromCfg(line, id, cfg);
+    mergeTemplate(container, line);
+    return;
 }
 
 // -----------------------------------------------------------------------------
 // Relays
 // -----------------------------------------------------------------------------
 
-function initRelays(data) {
+function relayToggle(event) {
+    event.preventDefault();
+    sendAction("relay", {
+        id: parseInt(event.target.dataset["id"], 10),
+        status: event.target.checked ? "1" : "0"});
+}
 
-    var current = $("#relays > div").length;
-    if (current > 0) { return; }
+function initRelayToggle(id, cfg) {
+    let line = loadConfigTemplate("relay-control");
 
-    var template = $("#relayTemplate .pure-g")[0];
-    for (var i=0; i<data.length; i++) {
+    let name = line.querySelector("span[data-key='relayName']");
+    name.textContent = cfg.relayName;
+    name.dataset["id"] = id;
+    name.setAttribute("title", cfg.relayDesc);
 
-        // Add relay fields
-        var line = $(template).clone();
-        $(".id", line).html(i);
-        $(":checkbox", line).prop('checked', data[i]).attr("data", i)
-            .prop("id", "relay" + i)
-            .on("change", function (event) {
-                var id = parseInt($(event.target).attr("data"), 10);
-                var status = $(event.target).prop("checked");
-                doToggle(id, status);
-            });
-        $("label.toggle", line).prop("for", "relay" + i)
-        line.appendTo("#relays");
+    let realId = "relay".concat(id);
 
-    }
+    let toggle = line.querySelector("input[type='checkbox']");
+    toggle.checked = false;
+    toggle.disabled = true;
+    toggle.dataset["id"] = id;
+    toggle.addEventListener("change", relayToggle);
 
+    toggle.setAttribute("id", realId);
+    toggle.nextElementSibling.setAttribute("for", realId);
+
+    mergeTemplate(document.getElementById("relays"), line);
 }
 
 function updateRelays(data) {
-    var size = data.size;
-    for (var i=0; i<size; ++i) {
-        var elem = $("input[name='relay'][data='" + i + "']");
-        elem.prop("checked", data.status[i]);
-        var lock = {
+    data.states.forEach((state, id) => {
+        const relay = fromSchema(state, data.schema);
+
+        let elem = document.querySelector(`input[name='relay'][data-id='${id}']`);
+        elem.checked = relay.status;
+        elem.disabled = ({
             0: false,
-            1: !data.status[i],
-            2: data.status[i]
-        };
-        elem.prop("disabled", lock[data.lock[i]]); // RELAY_LOCK_DISABLED=0
-    }
-}
-
-function createCheckboxes() {
-
-    $("input[type='checkbox']").each(function() {
-
-        if($(this).prop("name"))$(this).prop("id", $(this).prop("name"));
-        $(this).parent().addClass("toggleWrapper");
-        $(this).after('<label for="' + $(this).prop("name") + '" class="toggle"><span class="toggle__handler"></span></label>')
-
+            1: !relay.status,
+            2: relay.status
+        })[relay.lock]; // TODO: specify lock statuses earlier?
     });
-
 }
 
-function initRelayConfig(data) {
-
-    var current = $("#relayConfig > legend").length; // there is a legend per relay
-    if (current > 0) { return; }
-
-    var size = data.size;
-    var start = data.start;
-
-    var template = $("#relayConfigTemplate").children();
-
-    for (var i=start; i<size; ++i) {
-        var line = $(template).clone();
-
-        $("span.id", line).html(i);
-        $("span.gpio", line).html(data.gpio[i]);
-        $("select[name='relayBoot']", line).val(data.boot[i]);
-        $("select[name='relayPulse']", line).val(data.pulse[i]);
-        $("input[name='relayTime']", line).val(data.pulse_time[i]);
-
-        if ("sch_last" in data) {
-            $("input[name='relayLastSch']", line)
-                .prop('checked', data.sch_last[i])
-                .attr("id", "relayLastSch" + i)
-                .attr("name", "relayLastSch" + i)
-                .next().attr("for","relayLastSch" + (i));
-        }
-
-        if ("group" in data) {
-            $("input[name='mqttGroup']", line).val(data.group[i]);
-        }
-        if ("group_sync" in data) {
-            $("select[name='mqttGroupSync']", line).val(data.group_sync[i]);
-        }
-        if ("on_disc" in data) {
-            $("select[name='relayOnDisc']", line).val(data.on_disc[i]);
-        }
-
-        setOriginalsFromValues($("input,select", line));
-        line.appendTo("#relayConfig");
-
-        // Populate the relay SELECTs
-        $("select.isrelay").append(
-            $("<option></option>")
-                .attr("value", i)
-                .text("Switch #" + i)
-        );
-
-    }
-
-}
-
-function initLeds(data) {
-
-    var current = $("#ledConfig > div").length;
-    if (current > 0) { return; }
-
-    var size = data.length;
-    var template = $("#ledConfigTemplate").children();
-    for (var i=0; i<size; ++i) {
-        var line = $(template).clone();
-        $("span.id", line).html(i);
-        $("select", line).attr("data", i);
-        $("input", line).attr("data", i);
-        line.appendTo("#ledConfig");
-    }
-
+function initRelayConfig(id, cfg) {
+    let line = loadConfigTemplate("relay-config");
+    fillTemplateLineFromCfg(line, id, cfg);
+    mergeTemplate(document.getElementById("relayConfig"), line);
 }
 
 // -----------------------------------------------------------------------------
 // Sensors & Magnitudes
 // -----------------------------------------------------------------------------
 
-<!-- removeIf(!sensor)-->
+//removeIf(!sensor)
+
+function initMagnitudesTypes(data) {
+    data.types.values.forEach((cfg) => {
+        const info = fromSchema(cfg, data.types.schema);
+        MagnitudeNames[info.type] = info.name;
+        MagnitudeTypePrefixes[info.type] = info.prefix;
+        MagnitudePrefixTypes[info.prefix] = info.type;
+    });
+
+    data.errors.values.forEach((cfg) => {
+        const error = fromSchema(cfg, data.errors.schema);
+        MagnitudeErrors[error.type] = error.name;
+    });
+
+    data.units.values.forEach((cfg) => {
+        const unit = fromSchema(cfg, data.units.schema);
+
+        // XXX: schema, too?
+        let options = [];
+        unit.supported.forEach(([id, name]) => {
+            MagnitudeUnits[id] = name;
+            options.push({id, name});
+        });
+
+        // no need for the select when there's no choice
+        if (options.length < 2) {
+            return;
+        }
+
+        let line = loadTemplate("sns-units");
+        line.querySelector("label").textContent =
+            `${MagnitudeNames[unit.type]} #${unit.index_global}`;
+
+        let select = line.querySelector("select");
+        select.setAttribute("name",
+            `${MagnitudeTypePrefixes[unit.type]}Units${unit.index_global}`);
+
+        initSelect(select, options);
+        setOriginalsFromValuesForNode(line, [select]);
+
+        mergeTemplate(document.getElementById("sns-units-config"), line);
+    });
+}
+
 function initMagnitudes(data) {
-
-    // check if already initialized (each magnitude is inside div.pure-g)
-    var done = $("#magnitudes > div").length;
-    if (done > 0) { return; }
-
-    var size = data.size;
-
-    // add templates
-    var template = $("#magnitudeTemplate").children();
-
-    for (var i=0; i<size; ++i) {
-        var magnitude = {
-            "name": magnitudeType(data.type[i]) + " #" + parseInt(data.index[i], 10),
-            "units": data.units[i],
-            "description": data.description[i]
-        };
-        magnitudes.push(magnitude);
-
-        var line = $(template).clone();
-        $("label", line).html(magnitude.name);
-        $("div.hint", line).html(magnitude.description);
-        $("input", line).attr("data", i);
-        line.appendTo("#magnitudes");
+    let container = document.getElementById("magnitudes");
+    if (container.childElementCount > 0) {
+        return;
     }
 
+    data.magnitudes.values.forEach((cfg, index) => {
+        const magnitude = fromSchema(cfg, data.magnitudes.schema);
+
+        const prettyName = MagnitudeNames[magnitude.type]
+            .concat(" #").concat(parseInt(magnitude.index_global, 10));
+        Magnitudes.push({
+            name: prettyName,
+            units: MagnitudeUnits[magnitude.units],
+            description: magnitude.description
+        });
+
+        let info = loadTemplate("magnitude-info");
+        info.querySelector("label").textContent = prettyName;
+        info.querySelector("input").dataset["id"] = index;
+        info.querySelector("input").dataset["type"] = magnitude.type;
+        info.querySelector("div.sns-desc").textContent = magnitude.description;
+        info.querySelector("div.sns-info").style.display = "none";
+
+        mergeTemplate(container, info);
+    });
 }
-<!-- endRemoveIf(!sensor)-->
+
+function updateMagnitudes(data) {
+    data.values.forEach((cfg, id) => {
+        const magnitude = fromSchema(cfg, data.schema);
+
+        let input = document.querySelector(`input[name='magnitude'][data-id='${id}']`);
+        input.value = (0 !== magnitude.error)
+            ? MagnitudeErrors[magnitude.error]
+            : (("nan" === magnitude.value)
+                ? ""
+                : `${magnitude.value}${Magnitudes[id].units}`);
+
+        if (magnitude.info.length) {
+            let info = input.parentElement.parentElement.querySelector("div.sns-info");
+            info.style.display = "inherit";
+            info.textContent = magnitude.info;
+        }
+
+    });
+}
+
+//endRemoveIf(!sensor)
+
+// -----------------------------------------------------------------------------
+// Thermostat
+// -----------------------------------------------------------------------------
+
+//removeIf(!thermostat)
+
+function thermostatCheckTempRange(event) {
+    const min = document.getElementById("tempRangeMinInput");
+    const max = document.getElementById("tempRangeMaxInput");
+
+    if (event.target.id === max.id) {
+        const maxValue = parseInt(max.value, 10) - 1;
+        if (parseInt(min.value, 10) > maxValue) {
+            min.value = maxValue;
+        }
+    } else {
+        const minValue = parseInt(min.value, 10) + 1;
+        if (parseInt(max.value, 10) < minValue) {
+            max.value = minValue;
+        }
+    }
+}
+
+//endRemoveIf(!thermostat)
+
+// -----------------------------------------------------------------------------
+// Curtains
+// -----------------------------------------------------------------------------
+
+//removeIf(!curtain)
+
+function curtainButtonHandler(event) {
+    if (event.type !== "click") {
+        return;
+    }
+
+    event.preventDefault();
+
+    let code = -1;
+
+    const list = event.target.classList;
+    if (list.contains("button-curtain-pause")) {
+        code = 0;
+    } else if (list.contains("button-curtain-open")) {
+        code = 1;
+    } else if (list.contains("button-curtain-close")) {
+        code = 2;
+    }
+
+    if (code >= 0) {
+        sendAction("curtainAction", {button: code});
+        event.target.style.background = "red";
+    }
+}
+
+function curtainSetHandler(event) {
+    sendAction("curtainAction", {position: event.target.value});
+}
+
+//Create the controls for one curtain. It is called when curtain is updated (so created the first time)
+//Let this there as we plan to have more than one curtain per switch
+function initCurtain() {
+    let container = document.getElementById("curtains");
+    if (container.childElementCount > 0) {
+        return;
+    }
+
+    // simple position slider
+    document.getElementById("curtainSet").addEventListener("change", curtainSetHandler);
+
+    // add and init curtain template, prepare multi switches
+    let line = loadConfigTemplate("curtain-control");
+    line.querySelector(".button-curtain-open").addEventListener("click", curtainButtonHandler);
+    line.querySelector(".button-curtain-pause").addEventListener("click", curtainButtonHandler);
+    line.querySelector(".button-curtain-close").addEventListener("click", curtainButtonHandler);
+    mergeTemplate(container, line);
+
+    addSimpleEnumerables("curtain", "Curtain", 1);
+}
+
+function setCurtainBackground(a, b) {
+    let elem = document.getElementById("curtainGetPicture");
+    elem.style.background = `linear-gradient(${a}, black ${b}%, #a0d6ff ${b}%)`;
+}
+
+function setCurtainBackgroundTwoSides(a, b) {
+    let elem = document.getElementById("curtainGetPicture");
+    elem.style.background = `linear-gradient(90deg, black ${a}%, #a0d6ff ${a}% ${b}%, black ${b}%)`;
+}
+
+function updateCurtain(value) {
+    switch(value.type) {
+    case '1': //One side left to right
+        setCurtainBackground('90deg', value.get);
+        break;
+    case '2': //One side right to left
+        setCurtainBackground('270deg', value.get);
+        break;
+    case '3': //Two sides
+        setCurtainBackgroundTwoSides(value.get / 2, (100 - value.get/2));
+        break;
+    case '0': //Roller
+    default:
+        setCurtainBackground('180deg', value.get);
+        break;
+    }
+
+    let set = document.getElementById("curtainSet");
+    set.value = value.set;
+
+    const backgroundMoving = 'rgb(192, 0, 0)';
+    const backgroundStopped = 'rgb(64, 184, 221)';
+
+    if (!value.moving) {
+        let button = document.querySelector("button.curtain-button");
+        button.style.background = backgroundStopped;
+    } else if (!value.button) {
+        let pause = document.querySelector("button.curtain-pause");
+        pause.style.background = backgroundMoving;
+    } else {
+        let open = document.querySelector("button.button-curtain-open");
+        let close = document.querySelector("button.button-curtain-close");
+        if (value.button === 1) {
+            open.style.background = backgroundMoving;
+            close.style.background = backgroundStopped;
+        } else if (value.button === 2) {
+            open.style.background = backgroundStopped;
+            close.style.background = backgroundMoving;
+        }
+    }
+}
+
+//endRemoveIf(!curtain)
 
 // -----------------------------------------------------------------------------
 // Lights
 // -----------------------------------------------------------------------------
 
-<!-- removeIf(!light)-->
+//removeIf(!light)
 
-// wheelColorPicker accepts:
-//   hsv(0...360,0...1,0...1)
-//   hsv(0...100%,0...100%,0...100%)
-// While we use:
-//   hsv(0...360,0...100%,0...100%)
-
-function _hsv_round(value) {
-    return Math.round(value * 100) / 100;
+function colorToHsvString(color) {
+    var h = String(Math.round(color.hsv.h));
+    var s = String(Math.round(color.hsv.s));
+    var v = String(Math.round(color.hsv.v));
+    return h + "," + s + "," + v;
 }
 
-function getPickerRGB(picker) {
-    return $(picker).wheelColorPicker("getValue", "css");
+function hsvStringToColor(hsv) {
+    var parts = hsv.split(",");
+    return {
+        h: parseInt(parts[0]),
+        s: parseInt(parts[1]),
+        v: parseInt(parts[2])
+    };
 }
 
-function setPickerRGB(picker, value) {
-    $(picker).wheelColorPicker("setValue", value, true);
+function colorSlider(type) {
+    return {component: iro.ui.Slider, options: {sliderType: type}};
 }
 
-// TODO: use pct values instead of doing conversion?
-function getPickerHSV(picker) {
-    var color = $(picker).wheelColorPicker("getColor");
-    return String(Math.ceil(_hsv_round(color.h) * 360))
-        + "," + String(Math.ceil(_hsv_round(color.s) * 100))
-        + "," + String(Math.ceil(_hsv_round(color.v) * 100));
+function colorWheel() {
+    return {component: iro.ui.Wheel, options: {}};
 }
 
-function setPickerHSV(picker, value) {
-    if (value === getPickerHSV(picker)) return;
-    var chunks = value.split(",");
-    $(picker).wheelColorPicker("setColor", {
-        h: _hsv_round(chunks[0] / 360),
-        s: _hsv_round(chunks[1] / 100),
-        v: _hsv_round(chunks[2] / 100)
-    });
+function colorBox() {
+    return {component: iro.ui.Box, options: {}};
 }
 
-function initColor(cfg) {
-    var rgb = false;
-    if (typeof cfg === "object") {
-        rgb = cfg.rgb;
+function updateColor(mode, value) {
+    if (ColorPicker) {
+        if (mode === "rgb") {
+            ColorPicker.color.hexString = value;
+        } else if (mode === "hsv") {
+            ColorPicker.color.hsv = hsvStringToColor(value);
+        }
+        return;
     }
 
-    // check if already initialized
-    var done = $("#colors > div").length;
-    if (done > 0) { return; }
-
-    // add template
-    var template = $("#colorTemplate").children();
-    var line = $(template).clone();
-    line.appendTo("#colors");
-
-    // init color wheel
-    $("input[name='color']").wheelColorPicker({
-        sliders: (rgb ? "wrgbp" : "whsp")
-    }).on("sliderup", function() {
-        if (rgb) {
-            sendAction("color", {rgb: getPickerRGB(this)});
-        } else {
-            sendAction("color", {hsv: getPickerHSV(this)});
-        }
-    });
-
-}
-
-function initCCT() {
-
-  // check if already initialized
-  var done = $("#cct > div").length;
-  if (done > 0) { return; }
-
-  $("#miredsTemplate").children().clone().appendTo("#cct");
-
-  $("#mireds").on("change", function() {
-    var value = $(this).val();
-    var parent = $(this).parents(".pure-g");
-    $("span", parent).html(value);
-    sendAction("mireds", {mireds: value});
-  });
-}
-
-function initChannels(num) {
-
-    // check if already initialized
-    var done = $("#channels > div").length > 0;
-    if (done) { return; }
-
-    // does it have color channels?
-    var colors = $("#colors > div").length > 0;
-
-    // calculate channels to create
-    var max = num;
-    if (colors) {
-        max = num % 3;
-        if ((max > 0) & useWhite) {
-            max--;
-            if (useCCT) {
-              max--;
-            }
-        }
+    // TODO: useRGB -> ltWheel?
+    // TODO: always show wheel + sliders like before?
+    var layout = []
+    if (mode === "rgb") {
+        layout.push(colorWheel());
+        layout.push(colorSlider("value"));
+    } else if (mode === "hsv") {
+        layout.push(colorBox());
+        layout.push(colorSlider("hue"));
     }
-    var start = num - max;
 
-    var onChannelSliderChange = function() {
-        var id = $(this).attr("data");
-        var value = $(this).val();
-        var parent = $(this).parents(".pure-g");
-        $("span", parent).html(value);
-        sendAction("channel", {id: id, value: value});
+    var options = {
+        color: (mode === "rgb") ? value : hsvStringToColor(value),
+        layout: layout
     };
 
-    // add channel templates
-    var i = 0;
-    var template = $("#channelTemplate").children();
-    for (i=0; i<max; i++) {
-
-        var channel_id = start + i;
-        var line = $(template).clone();
-        $("span.slider", line).attr("data", channel_id);
-        $("input.slider", line).attr("data", channel_id).on("change", onChannelSliderChange);
-        $("label", line).html("Channel #" + channel_id);
-
-        line.appendTo("#channels");
-
-    }
-
-    // Init channel dropdowns
-    for (i=0; i<num; i++) {
-        $("select.islight").append(
-            $("<option></option>").attr("value",i).text("Channel #" + i));
-    }
-
-    // add brightness template
-    var template = $("#brightnessTemplate").children();
-    var line = $(template).clone();
-    line.appendTo("#channels");
-
-    // init bright slider
-    $("#brightness").on("change", function() {
-        var value = $(this).val();
-        var parent = $(this).parents(".pure-g");
-        $("span", parent).html(value);
-        sendAction("brightness", {value: value});
+    // TODO: ref. #2451, this causes pretty fast updates.
+    // since we immediatly start the transition, debug print's yield() may interrupt us mid initialization
+    // api could also wait and hold the value for a bit, applying only some of the values between start and end, and then apply the last one
+    ColorPicker = new iro.ColorPicker("#color", options);
+    ColorPicker.on("input:change", (color) => {
+        if (mode === "rgb") {
+            sendAction("color", {rgb: color.hexString});
+        } else if (mode === "hsv") {
+            sendAction("color", {hsv: colorToHsvString(color)});
+        }
     });
-
 }
-<!-- endRemoveIf(!light)-->
+
+function onChannelSliderChange(event) {
+    event.target.nextElementSibling.textContent = event.target.value;
+    sendAction("channel", {id: event.target.dataset["id"], value: event.target.value});
+}
+
+function onBrightnessSliderChange(event) {
+    event.target.nextElementSibling.textContent = event.target.value;
+    sendAction("brightness", {value: event.target.value});
+}
+
+function updateMireds(value) {
+    let mireds = document.getElementById("mireds");
+    if (mireds !== null) {
+        mireds.setAttribute("min", value.cold);
+        mireds.setAttribute("max", value.warm);
+        mireds.value = value.value;
+        mireds.nextElementSibling.textContent = value.value;
+        return;
+    }
+
+    let control = loadTemplate("mireds-control");
+    control.getElementById("mireds").addEventListener("change", (event) => {
+        event.target.nextElementSibling.textContent = event.target.value;
+        sendAction("mireds", {mireds: event.target.value});
+    });
+    mergeTemplate(document.getElementById("cct"), control);
+    updateMireds(value);
+}
+
+function updateBrightness(value) {
+    let brightness = document.getElementById("brightness");
+    if (brightness !== null) {
+        brightness.value = value;
+        brightness.nextElementSibling.textContent = value;
+        return;
+    }
+
+    let template = loadTemplate("brightness-control");
+
+    let slider = template.getElementById("brightness");
+    slider.value = value;
+    slider.nextElementSibling.textContent = value;
+    slider.addEventListener("change", onBrightnessSliderChange);
+
+    mergeTemplate(document.getElementById("light"), template);
+}
+
+function initChannels(container, channels) {
+    channels.forEach((value, channel) => {
+        let line = loadTemplate("channel-control");
+        line.querySelector("span.slider").dataset["id"] = channel;
+
+        let slider = line.querySelector("input.slider");
+        slider.value = value;
+        slider.nextElementSibling.textContent = value;
+        slider.dataset["id"] = channel;
+        slider.addEventListener("change", onChannelSliderChange);
+
+        line.querySelector("label").textContent = "Channel #".concat(channel);
+        mergeTemplate(container, line);
+    });
+}
+
+function updateChannels(channels) {
+    let container = document.getElementById("channels");
+    if (container.childElementCount > 0) {
+        channels.forEach((value, channel) => {
+            let slider = container.querySelector(`input.slider[data-id='${channel}']`);
+            if (!slider) {
+                return;
+            }
+
+            // If there are RGB controls, no need for raw channel sliders
+            if (ColorPicker && (channel < 3)) {
+                slider.parentElement.style.display = "none";
+            }
+
+            // Or, when there are CCT controls
+            if ((channel === 3) || (channel === 4)) {
+                let cct = document.getElementById("cct");
+                if (cct.childElementCount > 0) {
+                    slider.parentElement.style.display = "none";
+                }
+            }
+
+            slider.value = value;
+            slider.nextElementSibling.textContent = value;
+        });
+        return;
+    }
+
+    initChannels(container, channels);
+    updateChannels(channels);
+}
+
+//endRemoveIf(!light)
 
 // -----------------------------------------------------------------------------
 // RFBridge
 // -----------------------------------------------------------------------------
 
-<!-- removeIf(!rfbridge)-->
+//removeIf(!rfbridge)
 
-function rfbLearn() {
-    var parent = $(this).parents(".pure-g");
-    var input = $("input", parent);
-    sendAction("rfblearn", {id: input.attr("data-id"), status: input.attr("data-status")});
+function rfbAction(event) {
+    const prefix = "button-rfb-";
+    let [action] = Array.from(event.target.classList)
+        .filter(x => x.startsWith(prefix));
+
+    if (action) {
+        let container = event.target.parentElement.parentElement;
+        let input = container.querySelector("input");
+
+        action = action.replace(prefix, "");
+        sendAction(`rfb${action}`, {
+            id: input.dataset["id"],
+            status: input.dataset["status"]
+        });
+    }
 }
 
-function rfbForget() {
-    var parent = $(this).parents(".pure-g");
-    var input = $("input", parent);
-    sendAction("rfbforget", {id: input.attr("data-id"), status: input.attr("data-status")});
+function rfbAdd() {
+    let container = document.getElementById("rfbNodes");
+
+    const id = container.childElementCount;
+    let line = loadTemplate("rfb-node");
+    line.querySelector("span").textContent = id;
+
+    for (let input of line.querySelectorAll("input")) {
+        input.dataset["id"] = id;
+    }
+
+    elementSelectorOnClick(".button-rfb-learn", rfbAction);
+    elementSelectorOnClick(".button-rfb-forget", rfbAction);
+    elementSelectorOnClick(".button-rfb-send", rfbAction);
+
+    mergeTemplate(container, line);
+
+    return false;
 }
 
-function rfbSend() {
-    var parent = $(this).parents(".pure-g");
-    var input = $("input", parent);
-    sendAction("rfbsend", {id: input.attr("data-id"), status: input.attr("data-status"), data: input.val()});
+function rfbSelector(id, status) {
+    return `input[name='rfbcode'][data-id='${id}'][data-status='${status}']`;
 }
 
-function addRfbNode() {
-
-    var numNodes = $("#rfbNodes > legend").length;
-
-    var template = $("#rfbNodeTemplate").children();
-    var line = $(template).clone();
-    $("span", line).html(numNodes);
-    $(line).find("input").each(function() {
-        this.dataset["id"] = numNodes;
+function rfbHandleCodes(value) {
+    value.codes.forEach((codes, id) => {
+        let realId = id + value.start;
+        let [off, on] = codes;
+        document.querySelector(rfbSelector(realId, 0)).value = off;
+        document.querySelector(rfbSelector(realId, 1)).value = on;
     });
-    $(line).find(".button-rfb-learn").on("click", rfbLearn);
-    $(line).find(".button-rfb-forget").on("click", rfbForget);
-    $(line).find(".button-rfb-send").on("click", rfbSend);
-    line.appendTo("#rfbNodes");
-
-    return line;
 }
-<!-- endRemoveIf(!rfbridge)-->
+
+//endRemoveIf(!rfbridge)
 
 // -----------------------------------------------------------------------------
 // LightFox
 // -----------------------------------------------------------------------------
 
-<!-- removeIf(!lightfox)-->
+//removeIf(!lightfox)
 
 function lightfoxLearn() {
-    sendAction("lightfoxLearn", {});
+    sendAction("lightfoxLearn");
 }
 
 function lightfoxClear() {
-    sendAction("lightfoxClear", {});
+    sendAction("lightfoxClear");
 }
 
-function initLightfox(data, relayCount) {
-
-    var numNodes = data.length;
-
-    var template = $("#lightfoxNodeTemplate").children();
-
-    var i, j;
-    for (i=0; i<numNodes; i++) {
-        var $line = $(template).clone();
-        $line.find("label > span").text(data[i]["id"]);
-        $line.find("select").each(function() {
-            $(this).attr("name", "btnRelay" + data[i]["id"]);
-            for (j=0; j < relayCount; j++) {
-                $(this).append($("<option >").attr("value", j).text("Switch #" + j));
-            }
-            $(this).val(data[i]["relay"]);
-            status = !status;
-        });
-        setOriginalsFromValues($("input,select", $line));
-        $line.appendTo("#lightfoxNodes");
-    }
-
-    var $panel = $("#panel-lightfox")
-    $(".button-lightfox-learn").off("click").click(lightfoxLearn);
-    $(".button-lightfox-clear").off("click").click(lightfoxClear);
-
-}
-<!-- endRemoveIf(!lightfox)-->
+//endRemoveIf(!lightfox)
 
 // -----------------------------------------------------------------------------
 // Processing
 // -----------------------------------------------------------------------------
 
 function processData(data) {
-
-    if (debug) console.log(data);
+    if (Debug) {
+        console.log(data);
+    }
 
     // title
     if ("app_name" in data) {
-        var title = data.app_name;
-		if ("app_version" in data) {
-			title = title + " " + data.app_version;
-		}
-        $("span[name=title]").html(title);
+        let title = data.app_name;
+        if ("app_version" in data) {
+            let span = document.querySelector("span[data-key='title']");
+            span.textContent = data.app_version;
+            title = title + " " + data.app_version;
+        }
         if ("hostname" in data) {
             title = data.hostname + " - " + title;
         }
         document.title = title;
     }
 
-    Object.keys(data).forEach(function(key) {
-
-        var i;
-        var value = data[key];
+    Object.keys(data).forEach((key) => {
+        let value = data[key];
 
         // ---------------------------------------------------------------------
-        // Web mode
+        // Web mode & modules
         // ---------------------------------------------------------------------
 
         if ("webMode" === key) {
-            password = (1 === value);
-            $("#layout").toggle(!password);
-            $("#password").toggle(password);
+            let initial = (1 === value);
+
+            let layout = document.getElementById("layout");
+            layout.style.display = initial ? "none" : "inherit";
+
+            let password = document.getElementById("password");
+            password.style.display = initial ? "inherit" : "none";
+
+            return;
+        }
+
+        if ("modulesVisible" === key) {
+            // TODO: Move to another 'module' that saves the energy data and have a common setting?
+            if (value.includes("pzem")) {
+                document.querySelector("input[name='snsSave']").disabled = true;
+            }
+
+            value.forEach((module) => {
+                moduleVisible(module);
+            });
+            return;
+        }
+
+        if ("gpioConfig" === key) {
+            let types = [];
+
+            for (const [type, id] of value.types) {
+                types.push({
+                    "id": id,
+                    "name": type
+                });
+
+                let gpios = [{"id": 153, "name": "NONE"}];
+                value[type].forEach((pin) => {
+                    gpios.push({"id": pin, "name": `GPIO${pin}`});
+                });
+                addEnumerables(`gpio-${type}`, gpios);
+            }
+
+            addEnumerables("gpio-types", types);
+            return;
         }
 
         // ---------------------------------------------------------------------
@@ -1559,7 +2116,9 @@ function processData(data) {
         // ---------------------------------------------------------------------
 
         if ("action" === key) {
-            if ("reload" === data.action) { doReload(1000); }
+            if ("reload" === data.action) {
+                pageReloadIn(1000);
+            }
             return;
         }
 
@@ -1567,243 +2126,153 @@ function processData(data) {
         // RFBridge
         // ---------------------------------------------------------------------
 
-        <!-- removeIf(!rfbridge)-->
+        //removeIf(!rfbridge)
 
         if ("rfbCount" === key) {
-            for (i=0; i<data.rfbCount; i++) { addRfbNode(); }
+            for (let i = 0; i < data.rfbCount; ++i) {
+                rfbAdd();
+            }
             return;
         }
 
         if ("rfb" === key) {
-            var rfb = data.rfb;
-
-            var size = rfb.size;
-            var start = rfb.start;
-
-            var processOn = ((rfb.on !== undefined) && (rfb.on.length > 0));
-            var processOff = ((rfb.off !== undefined) && (rfb.off.length > 0));
-
-            for (var i=0; i<size; ++i) {
-                if (processOn) $("input[name='rfbcode'][data-id='" + (i + start) + "'][data-status='1']").val(rfb.on[i]);
-                if (processOff) $("input[name='rfbcode'][data-id='" + (i + start) + "'][data-status='0']").val(rfb.off[i]);
-            }
-
+            rfbHandleCodes(value);
             return;
         }
 
-        <!-- endRemoveIf(!rfbridge)-->
-
-        // ---------------------------------------------------------------------
-        // LightFox
-        // ---------------------------------------------------------------------
-
-        <!-- removeIf(!lightfox)-->
-
-        if ("lightfoxButtons" === key) {
-            initLightfox(data["lightfoxButtons"], data["lightfoxRelayCount"]);
-            return;
-        }
-
-        <!-- endRemoveIf(!lightfox)-->
+        //endRemoveIf(!rfbridge)
 
         // ---------------------------------------------------------------------
         // RFM69
         // ---------------------------------------------------------------------
 
-        <!-- removeIf(!rfm69)-->
+        //removeIf(!rfm69)
 
-        if (key == "packet") {
-            var packet = data.packet;
-            var d = new Date();
-            packets.row.add([
-                d.toLocaleTimeString('en-US', { hour12: false }),
-                packet.senderID,
-                packet.packetID,
-                packet.targetID,
-                packet.key,
-                packet.value,
-                packet.rssi,
-                packet.duplicates,
-                packet.missing,
-            ]).draw(false);
-            return;
-        }
-
-        if (key == "mapping") {
-            for (var i in data.mapping) {
-
-                // add a new row
-                addMapping();
-
-                // get group
-                var line = $("#mapping .pure-g")[i];
-
-                // fill in the blanks
-                var mapping = data.mapping[i];
-                Object.keys(mapping).forEach(function(key) {
-                    var id = "input[name=" + key + "]";
-                    if ($(id, line).length) $(id, line).val(mapping[key]);
+        if ("rfm69" === key) {
+            if (value.message !== undefined) {
+                rfm69AddMessage(value.message);
+            }
+            if (value.mapping !== undefined) {
+                value.mapping.forEach((mapping) => {
+                    rfm69AddMapping(fromSchema(mapping, value.schema));
                 });
-
-                setOriginalsFromValues($("input", line));
             }
             return;
         }
 
-        <!-- endRemoveIf(!rfm69)-->
+        //endRemoveIf(!rfm69)
 
         // ---------------------------------------------------------------------
         // RPN Rules
         // ---------------------------------------------------------------------
 
-        if (key == "rpnRules") {
-			for (var i in data.rpnRules) {
-
-				// add a new row
-				addRPNRule();
-
-				// get group
-				var line = $("#rpnRules .pure-g")[i];
-
-				// fill in the blanks
-				var rule = data.rpnRules[i];
-                $("input", line).val(rule);
-
-                setOriginalsFromValues($("input", line));
-
+        if ("rpnRules" === key) {
+			for (let rule of value) {
+				rpnAddRule({"rpnRule": rule});
             }
 			return;
 		}
 
-        if (key == "rpnTopics") {
-			for (var i in data.rpnTopics) {
-
-				// add a new row
-				addRPNTopic();
-
-				// get group
-				var line = $("#rpnTopics .pure-g")[i];
-
-				// fill in the blanks
-				var topic = data.rpnTopics[i];
-				var name = data.rpnNames[i];
-                $("input[name='rpnTopic']", line).val(topic);
-                $("input[name='rpnName']", line).val(name);
-
-                setOriginalsFromValues($("input", line));
-
-            }
+        if ("rpnTopics" === key) {
+            value.topics.forEach((topic) => {
+                rpnAddTopic(fromSchema(topic, value.schema));
+            });
 			return;
         }
-        
-        if (key == "rpnNames") return;
+
+        // ---------------------------------------------------------------------
+        // Curtains
+        // ---------------------------------------------------------------------
+
+        //removeIf(!curtain)
+
+        if ("curtainState" === key) {
+            initCurtain();
+            updateCurtain(value);
+            return;
+        }
+
+        //endRemoveIf(!curtain)
 
         // ---------------------------------------------------------------------
         // Lights
         // ---------------------------------------------------------------------
 
-        <!-- removeIf(!light)-->
+        //removeIf(!light)
 
-        if ("rgb" === key) {
-            initColor({rgb: true});
-            setPickerRGB($("input[name='color']"), value);
+        if ("lightstate" === key) {
+            let color = document.getElementById("color");
+            color.style.display = value ? "inherit" : "none";
             return;
         }
 
-        if ("hsv" === key) {
-            initColor({hsv: true});
-            setPickerHSV($("input[name='color']"), value);
+        if (("rgb" === key) || ("hsv" === key)) {
+            updateColor(key, value);
             return;
         }
 
         if ("brightness" === key) {
-            $("#brightness").val(value);
-            $("span.brightness").html(value);
+            updateBrightness(value);
             return;
         }
 
         if ("channels" === key) {
-            var len = value.length;
-            initChannels(len);
-            for (i in value) {
-                var ch = value[i];
-                $("input.slider[data=" + i + "]").val(ch);
-                $("span.slider[data=" + i + "]").html(ch);
-            }
+            updateChannels(value);
+            addSimpleEnumerables("channel", "Channel", value.length);
             return;
         }
 
         if ("mireds" === key) {
-            $("#mireds").attr("min", value["cold"]);
-            $("#mireds").attr("max", value["warm"]);
-            $("#mireds").val(value["value"]);
-            $("span.mireds").html(value["value"]);
+            updateMireds(value);
             return;
         }
 
-        if ("useWhite" === key) {
-            useWhite = value;
-        }
-
-        if ("useCCT" === key) {
-            initCCT();
-            useCCT = value;
-        }
-
-        <!-- endRemoveIf(!light)-->
+        //endRemoveIf(!light)
 
         // ---------------------------------------------------------------------
         // Sensors & Magnitudes
         // ---------------------------------------------------------------------
 
-        <!-- removeIf(!sensor)-->
+        //removeIf(!sensor)
 
-        if ("magnitudesConfig" === key) {
-            initMagnitudes(value);
-        }
-
-        if ("magnitudes" === key) {
-            for (var i=0; i<value.size; ++i) {
-                var error = value.error[i] || 0;
-                var text = (0 === error) ?
-                    value.value[i] + magnitudes[i].units :
-                    magnitudeError(error);
-                var element = $("input[name='magnitude'][data='" + i + "']");
-                element.val(text);
-            }
+        if ("magnitudesTypes" === key) {
+            initMagnitudesTypes(value);
             return;
         }
 
-        <!-- endRemoveIf(!sensor)-->
+        if ("magnitudesConfig" === key) {
+            initMagnitudes(value);
+            return;
+        }
+
+        if ("magnitudesModule" === key) {
+            createMagnitudeList(value);
+            return;
+        }
+
+        if ("magnitudes" === key) {
+            updateMagnitudes(value);
+            return;
+        }
+
+        //endRemoveIf(!sensor)
 
         // ---------------------------------------------------------------------
         // WiFi
         // ---------------------------------------------------------------------
 
-        if ("maxNetworks" === key) {
-            maxNetworks = parseInt(value, 10);
-            return;
-        }
+        if ("wifiConfig" === key) {
+            let container = document.getElementById("networks");
+            container.dataset["settingsMax"] = value.max;
 
-        if ("wifi" === key) {
-            value.forEach(addNetwork);
+            value.networks.forEach((entries) => {
+                wifiNetworkAdd(fromSchema(entries, value.schema), false);
+            });
             return;
         }
 
         if ("scanResult" === key) {
-            $("div.scan.loading").hide();
-            $("#scanResult").show();
-        }
-
-        // -----------------------------------------------------------------------------
-        // Home Assistant
-        // -----------------------------------------------------------------------------
-
-        if ("haConfig" === key) {
-            send("{}");
-            $("#haConfig")
-                .append(new Text(value))
-                .height($("#haConfig")[0].scrollHeight);
+            wifiScanResult(value);
             return;
         }
 
@@ -1811,18 +2280,14 @@ function processData(data) {
         // Relays scheduler
         // -----------------------------------------------------------------------------
 
-        if ("schedules" === key) {
-            $("#schedules").attr("data-settings-max", value.max);
-            for (var i=0; i<value.size; ++i) {
-                // XXX: no
-                var sch_map = {};
-                Object.keys(value).forEach(function(key) {
-                    if ("size" == key) return;
-                    if ("max" == key) return;
-                    sch_map[key] = value[key][i];
-                });
-                addSchedule(sch_map);
-            }
+        if ("schConfig" === key) {
+            let container = document.getElementById("schedules");
+            container.dataset["settingsMax"] = value.max;
+
+            value.schedules.forEach((entries) => {
+                schAdd(fromSchema(entries, value.schema));
+            });
+
             return;
         }
 
@@ -1830,15 +2295,34 @@ function processData(data) {
         // Relays
         // ---------------------------------------------------------------------
 
-        if ("relayState" === key) {
-            initRelays(value.status);
-            updateRelays(value);
+        if ("relayConfig" === key) {
+            let container = document.getElementById("relays");
+            if (container.childElementCount > 0) {
+                return;
+            }
+
+            let relays = [];
+            value.relays.forEach((entries, id) => {
+                let cfg = fromSchema(entries, value.schema);
+                if (!cfg.relayName || !cfg.relayName.length) {
+                    cfg.relayName = `Switch #${id}`;
+                }
+
+                relays.push({
+                    "id": id,
+                    "name": `${cfg.relayName} (${cfg.relayDesc})`
+                });
+
+                initRelayToggle(id, cfg);
+                initRelayConfig(id, cfg);
+            });
+
+            addEnumerables("relay", relays);
             return;
         }
 
-        // Relay configuration
-        if ("relayConfig" === key) {
-            initRelayConfig(value);
+        if ("relayState" === key) {
+            updateRelays(value);
             return;
         }
 
@@ -1847,284 +2331,217 @@ function processData(data) {
         // ---------------------------------------------------------------------
 
         if ("ledConfig" === key) {
-            initLeds(value);
-            for (var i=0; i<value.length; ++i) {
-                var mode = $("select[name='ledMode'][data='" + i + "']");
-                var relay = $("select[name='ledRelay'][data='" + i + "']");
-                mode.val(value[i].mode);
-                relay.val(value[i].relay);
-                setOriginalsFromValues($([mode,relay]));
+            let container = document.getElementById("leds");
+            if (container.childElementCount > 0) {
+                return;
             }
+
+            value.leds.forEach((entries) => {
+                ledAdd(fromSchema(entries, value.schema));
+            });
+
+            addSimpleEnumerables("led", "LED", value.leds.length);
             return;
         }
 
         // ---------------------------------------------------------------------
-        // Domoticz
+        // Special mapping for domoticz and thingspeak
         // ---------------------------------------------------------------------
 
-        // Domoticz - Relays
         if ("dczRelays" === key) {
-            createRelayList(value, "dczRelays", "dczRelayTemplate");
+            createRelayList(value, "dczRelays", "dcz-relay");
             return;
         }
 
-        // Domoticz - Magnitudes
-        <!-- removeIf(!sensor)-->
-        if ("dczMagnitudes" === key) {
-            createMagnitudeList(value, "dczMagnitudes", "dczMagnitudeTemplate");
-            return;
-        }
-        <!-- endRemoveIf(!sensor)-->
-
-        // ---------------------------------------------------------------------
-        // Thingspeak
-        // ---------------------------------------------------------------------
-
-        // Thingspeak - Relays
         if ("tspkRelays" === key) {
-            createRelayList(value, "tspkRelays", "tspkRelayTemplate");
+            createRelayList(value, "tspkRelays", "tspk-relay");
             return;
-        }
-
-        // Thingspeak - Magnitudes
-        <!-- removeIf(!sensor)-->
-        if ("tspkMagnitudes" === key) {
-            createMagnitudeList(value, "tspkMagnitudes", "tspkMagnitudeTemplate");
-            return;
-        }
-        <!-- endRemoveIf(!sensor)-->
-
-        // ---------------------------------------------------------------------
-        // HTTP API
-        // ---------------------------------------------------------------------
-
-        // Auto generate an APIKey if none defined yet
-        if ("apiVisible" === key) {
-            if (data.apiKey === undefined || data.apiKey === "") {
-                generateAPIKey();
-            }
         }
 
         // ---------------------------------------------------------------------
         // General
         // ---------------------------------------------------------------------
 
-        // Messages
-        if ("message" === key) {
-            if (value == 8) {
-                configurationSaved = true;
-            }
-            window.alert(messages[value]);
+        if ("saved" === key) {
+            Settings.saved = value;
             return;
         }
 
-        // Web log
+        if ("message" === key) {
+            window.alert(value);
+            return;
+        }
+
+        // TODO: squash into a single message, needs a reworked debug buffering
         if ("weblog" === key) {
             send("{}");
 
-            var msg = value["msg"];
-            var pre = value["pre"];
+            let msg = value["msg"];
+            let pre = value["pre"];
 
-            for (var i=0; i < msg.length; ++i) {
+            let container = document.getElementById("weblog");
+            for (let i = 0; i < msg.length; ++i) {
                 if (pre[i]) {
-                    $("#weblog").append(new Text(pre[i]));
+                    container.appendChild(new Text(pre[i]));
                 }
-                $("#weblog").append(new Text(msg[i]));
+                container.appendChild(new Text(msg[i]));
             }
 
-            $("#weblog").scrollTop($("#weblog")[0].scrollHeight - $("#weblog").height());
-            return;
-        }
-
-        // Enable options
-        var position = key.indexOf("Visible");
-        if (position > 0 && position === key.length - 7) {
-            var module = key.slice(0,-7);
-            if (module == "sch") {
-                $("li.module-" + module).css("display", "inherit");
-                $("div.module-" + module).css("display", "flex");
-                return;
-            }
-            $(".module-" + module).css("display", "inherit");
+            followScroll(container);
             return;
         }
 
         if ("deviceip" === key) {
-            var a_href = $("span[name='" + key + "']").parent();
-            a_href.attr("href", "//" + value);
-            a_href.next().attr("href", "telnet://" + value);
+            let span = document.querySelector(`span[data-key='${key}']`);
+            span.textContent = value;
+            span.parentElement.setAttribute("href", "//".concat(value));
+            span.parentElement.nextElementSibling.setAttribute("href", "telnet://".concat(value));
+            return;
+        }
+
+        if ("uptime" === key) {
+            setUptime(value);
+            return;
         }
 
         if ("now" === key) {
-            now = value;
+            Now = parseInt(value, 10);
             return;
         }
 
         if ("free_size" === key) {
-            free_size = parseInt(value, 10);
+            FreeSize = parseInt(value, 10);
+            initGenericKeyValueElement(key, value);
+            return;
         }
 
-        // Pre-process
         if ("mqttStatus" === key) {
-            value = value ? "CONNECTED" : "NOT CONNECTED";
+            initGenericKeyValueElement(key, value ? "CONNECTED" : "DISCONNECTED");
+            return;
         }
+
         if ("ntpStatus" === key) {
-            value = value ? "SYNC'D" : "NOT SYNC'D";
-        }
-        if ("uptime" === key) {
-            ago = 0;
-            var uptime  = parseInt(value, 10);
-            var seconds = uptime % 60; uptime = parseInt(uptime / 60, 10);
-            var minutes = uptime % 60; uptime = parseInt(uptime / 60, 10);
-            var hours   = uptime % 24; uptime = parseInt(uptime / 24, 10);
-            var days    = uptime;
-            value = days + "d " + zeroPad(hours, 2) + "h " + zeroPad(minutes, 2) + "m " + zeroPad(seconds, 2) + "s";
-        }
-        <!-- removeIf(!thermostat)-->
-        if ("tmpUnits" == key) {
-            $("span.tmpUnit").html(data[key] == 1 ? "ºF" : "ºC");
-        }
-        <!-- endRemoveIf(!thermostat)-->
-
-        // ---------------------------------------------------------------------
-        // Matching
-        // ---------------------------------------------------------------------
-        var elems = [];
-
-        var pre;
-        var post;
-
-        // Look for INPUTs
-        var input = $("input[name='" + key + "']");
-        if (input.length > 0) {
-            if (input.attr("type") === "checkbox") {
-                input.prop("checked", value);
-            } else if (input.attr("type") === "radio") {
-                input.val([value]);
-            } else {
-                pre = input.attr("pre") || "";
-                post = input.attr("post") || "";
-                input.val(pre + value + post);
-            }
-            elems.push(input);
+            initGenericKeyValueElement(key, value ? "SYNC'D" : "NOT SYNC'D");
+            return;
         }
 
-        // Look for SPANs
-        var span = $("span[name='" + key + "']");
-        if (span.length > 0) {
-            if (Array.isArray(value)) {
-                value.forEach(function(elem) {
-                    span.append(elem);
-                    span.append('</br>');
-                    elems.push(span);
-                });
-            } else {
-                pre = span.attr("pre") || "";
-                post = span.attr("post") || "";
-                span.html(pre + value + post);
-                elems.push(span);
-            }
-        }
-
-        // Look for SELECTs
-        var select = $("select[name='" + key + "']");
-        if (select.length > 0) {
-            select.val(value);
-            elems.push(select);
-        }
-
-        setOriginalsFromValues($(elems));
-
+        initGenericKeyValueElement(key, value);
     });
-
 }
 
-function hasChanged() {
-
-    var newValue, originalValue;
-    if ($(this).attr("type") === "checkbox") {
-        newValue = $(this).prop("checked");
-        originalValue = ($(this).attr("original") === "true");
-    } else {
-        newValue = $(this).val();
-        originalValue = $(this).attr("original");
+function onElementChange(event) {
+    let action = event.target.dataset["action"];
+    if ("none" === action) {
+        return;
     }
-    var hasChanged = ("true" === $(this).attr("hasChanged"));
-    var action = $(this).attr("action");
 
-    if (typeof originalValue === "undefined") { return; }
-    if ("none" === action) { return; }
+    let originalValue = event.target.dataset["original"];
+    let newValue;
 
+    if ((event.target.tagName === "INPUT") && (event.target.type === "checkbox")) {
+        originalValue = stringToBoolean(originalValue);
+        newValue = event.target.checked;
+    } else if (event.target.tagName === "SELECT") {
+        newValue = stringifySelectedValues(event.target);
+    } else {
+        newValue = event.target.value;
+    }
+
+    if (typeof originalValue === "undefined") {
+        return;
+    }
+
+    let changed = isChangedElement(event.target);
     if (newValue !== originalValue) {
-        if (!hasChanged) {
-            ++numChanged;
-            if ("reconnect" === action) { ++numReconnect; }
-            if ("reboot" === action) { ++numReboot; }
-            if ("reload" === action) { ++numReload; }
+        if (!changed) {
+            ++Settings.counters.changed;
+            if (action in Settings.counters) {
+                ++Settings.counters[action];
+            }
         }
-        $(this).attr("hasChanged", true);
+        setChangedElement(event.target);
     } else {
-        if (hasChanged) {
-            --numChanged;
-            if ("reconnect" === action) { --numReconnect; }
-            if ("reboot" === action) { --numReboot; }
-            if ("reload" === action) { --numReload; }
+        if (changed) {
+            --Settings.counters.changed;
+            if (action in Settings.counters) {
+                --Settings.counters[action];
+            }
         }
-        $(this).attr("hasChanged", false);
+        resetChangedElement(event.target);
     }
+}
 
+function listenChanged(selector) {
+    for (let elem of document.querySelectorAll(selector)) {
+        elem.addEventListener("change", onElementChange);
+    }
 }
 
 // -----------------------------------------------------------------------------
 // Init & connect
 // -----------------------------------------------------------------------------
 
-function initUrls(root) {
-
-    var paths = ["ws", "upgrade", "config", "auth"];
-
-    urls["root"] = root;
-    paths.forEach(function(path) {
-        urls[path] = new URL(path, root);
-        urls[path].protocol = root.protocol;
-    });
-
-    if (root.protocol == "https:") {
-        urls.ws.protocol = "wss:";
-    } else {
-        urls.ws.protocol = "ws:";
+function onWebSocketMessage(event) {
+    var data = {};
+    try {
+        data = JSON.parse(event.data
+            .replace(/\n/g, "\\n")
+            .replace(/\r/g, "\\r")
+            .replace(/\t/g, "\\t"));
+    } catch (e) {
+        notifyError(null, null, 0, 0, e);
     }
 
+    processData(data);
+}
+
+function webSocketPing() {
+    sendAction("ping");
+}
+
+function onWebSocketOpen() {
+    WebsockPingPong = setInterval(webSocketPing, 5000);
+}
+
+function onWebSocketClose() {
+    clearInterval(WebsockPingPong);
+    if (window.confirm("Connection lost with the device, click OK to refresh the page")) {
+        let layout = document.getElementById("layout");
+        layout.style.display = "none";
+        window.location.reload();
+    }
 }
 
 function connectToURL(url) {
+    Urls = new UrlsBase(url);
+    setInterval(() => keepTime(), 1000);
 
-    initUrls(url);
-
-    fetch(urls.auth.href, {
+    fetch(Urls.auth.href, {
         'method': 'GET',
         'cors': true,
         'credentials': 'same-origin'
-    }).then(function(response) {
-        // Nothing to do, reload page and retry
-        if (response.status != 200) {
-            doReload(5000);
+    }).then((response) => {
+        if (response.status === 200) {
+            if (Websock) {
+                Websock.close();
+            }
+
+            Websock = new WebSocket(Urls.ws.href);
+            Websock.onmessage = onWebSocketMessage;
+            Websock.onclose = onWebSocketClose;
+            Websock.onopen = onWebSocketOpen;
+
+            document.getElementById("downloader").href = Urls.config.href;
             return;
         }
-        // update websock object
-        if (websock) { websock.close(); }
-        websock = new WebSocket(urls.ws.href);
-        websock.onmessage = function(evt) {
-            var data = getJson(evt.data.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t"));
-            if (data) {
-                processData(data);
-            }
-        };
-    }).catch(function(error) {
-        console.log(error);
-        doReload(5000);
-    });
 
+        // Nothing to do, reload page and retry on errors
+        notifyError(`${Urls.ws.href} responded with status code ${response.status}, reloading the page`, null, 0, 0, null);
+        pageReloadIn(5000);
+    }).catch((error) => {
+        notifyError(null, null, 0, 0, error);
+        pageReloadIn(5000);
+    });
 }
 
 function connect(host) {
@@ -2138,102 +2555,176 @@ function connectToCurrentURL() {
     connectToURL(new URL(window.location));
 }
 
-$(function() {
+// TODO: modularize initialization with separate files?
 
-    initMessages();
-    loadTimeZones();
-    createCheckboxes();
-    setInterval(function() { keepTime(); }, 1000);
+function main() {
+    initExternalLinks();
+    createCheckboxes(document);
 
-    $(".password-reveal").on("click", toggleVisiblePassword);
+    // Initial page, when webMode only allows to change the password
+    initSetupPassword(document.forms["form-setup-password"]);
 
-    $("#menuLink").on("click", toggleMenu);
-    $(".pure-menu-link").on("click", showPanel);
-    $("progress").attr({ value: 0, max: 100 });
-
-    $(".button-update").on("click", doUpdate);
-    $(".button-update-password").on("click", doUpdatePassword);
-    $(".button-generate-password").on("click", doGeneratePassword);
-    $(".button-reboot").on("click", doReboot);
-    $(".button-reconnect").on("click", doReconnect);
-    $(".button-wifi-scan").on("click", doScan);
-    $(".button-ha-config").on("click", doHAConfig);
-    $(".button-dbgcmd").on("click", doDebugCommand);
-    $("input[name='dbgcmd']").enterKey(doDebugCommand);
-    $(".button-dbg-clear").on("click", doDebugClear);
-    $(".button-settings-backup").on("click", doBackup);
-    $(".button-settings-restore").on("click", doRestore);
-    $(".button-settings-factory").on("click", doFactoryReset);
-    $("#uploader").on("change", onFileUpload);
-    $(".button-upgrade").on("click", doUpgrade);
-
-    <!-- removeIf(!thermostat)-->
-    $(".button-thermostat-reset-counters").on('click', doResetThermostatCounters);
-    <!-- endRemoveIf(!thermostat)-->
-
-    $(".button-apikey").on("click", generateAPIKey);
-    $(".button-upgrade-browse").on("click", function() {
-        $("input[name='upgrade']")[0].click();
-        return false;
+    // Sidebar menu & buttons
+    elementSelectorOnClick(".menu-link", toggleMenu);
+    elementSelectorOnClick(".pure-menu-link", showPanel);
+    elementSelectorOnClick(".button-update", (event) => {
+        event.preventDefault();
+        sendConfigFromAllForms();
     });
-    $("input[name='upgrade']").change(function (){
-        var file = this.files[0];
-        $("input[name='filename']").val(file.name);
+    elementSelectorOnClick(".button-reconnect", askAndCallReconnect);
+    elementSelectorOnClick(".button-reboot", askAndCallReboot);
+
+    // WiFi config
+    elementSelectorOnClick(".button-wifi-scan", startWifiScan);
+
+    // OTA
+    let upgrade = document.querySelector("input[name='upgrade']");
+    elementSelectorOnClick(".button-upgrade-browse", () => {
+        upgrade.click();
     });
-    $(".button-add-network").on("click", function() {
-        $(".more", addNetwork()).toggle();
+    upgrade.addEventListener("change", (event) => {
+        document.querySelector("input[name='filename']").value = event.target.files[0].name;
     });
 
-    $(".button-add-switch-schedule").on("click", function() {
-        addSchedule({schType: 1, schSwitch: -1});
-    });
-    <!-- removeIf(!light)-->
-    $(".button-add-light-schedule").on("click", function() {
-        addSchedule({schType: 2, schSwitch: -1});
-    });
-    <!-- endRemoveIf(!light)-->
+    // Module specific elements
 
-    $(".button-add-rpnrule").on('click', addRPNRule);
-    $(".button-add-rpntopic").on('click', addRPNTopic);
-
-    $(".button-del-parent").on('click', delParent);
-
-    <!-- removeIf(!rfm69)-->
-    $(".button-add-mapping").on('click', addMapping);
-    $(".button-clear-counts").on('click', doClearCounts);
-    $(".button-clear-messages").on('click', doClearMessages);
-    $(".button-clear-filters").on('click', doClearFilters);
-    $('#packets tbody').on('mousedown', 'td', doFilter);
-    packets = $('#packets').DataTable({
-        "paging": false
+    //removeIf(!garland)
+    elementSelectorListener(".checkbox-garland-enable", "change", (event) => {
+        sendAction("garland_switch", {status: event.target.checked ? 1 : 0});
     });
-    for (var i = 0; i < packets.columns()[0].length; i++) {
-        filters[i] = false;
+
+    elementSelectorListener(".slider-garland-brightness", "change", (event) => {
+        sendAction("garland_set_brightness", {brightness: event.target.value});
+    });
+    elementSelectorListener(".slider-garland-speed", "change", (event) => {
+        sendAction("garland_set_speed", {speed: event.target.value});
+    });
+
+    elementSelectorOnClick(".button-garland-set-default", () => {
+        sendAction("garland_set_default", {});
+    });
+    //endRemoveIf(!garland)
+
+    //removeIf(!thermostat)
+    elementSelectorOnClick(".button-thermostat-reset-counters", () => {
+        const questions = [askSaveSettings, (ask) => ask("Are you sure you want to reset burning counters?")];
+        askAndCall(questions, () => {
+            sendAction("thermostat_reset_counters");
+        });
+    });
+    elementSelectorListener("#tempRangeMaxInput", "change", thermostatCheckTempRange);
+    elementSelectorListener("#tempRangeMinInput", "change", thermostatCheckTempRange);
+    //endRemoveIf(!thermostat)
+
+    //removeIf(!lightfox)
+    elementSelectorOnClick(".button-lightfox-learn", lightfoxLearn);
+    elementSelectorOnClick(".button-lightfox-clear", lightfoxClear);
+    //endRemoveIf(!lightfox)
+
+    //removeIf(!rfm69)
+    elementSelectorOnClick(".button-clear-counts", rfm69ClearCounters);
+    elementSelectorOnClick(".button-clear-messages", rfm69ClearMessages);
+
+    elementSelectorOnClick(".button-clear-filters", rfm69ClearFilters);
+    elementSelectorOnClick("#rfm69-messages tbody", rfm69FilterEvent);
+
+    groupSettingsOnAdd("rfm69-mapping", () => {
+        rfm69AddMapping();
+    });
+    //endRemoveIf(!rfm69)
+
+    // -----------------------------------------------------------------------------
+
+    // While the settings are grouped using forms, actual submit is useless here
+    // b/c the data is intended to be sent with the websocket connection and never through some http endpoint
+    // *NOTICE* that manual event cancellation should happen asap, any exceptions will stop the specific
+    // handler function, but will not stop anything else left in the chain.
+    for (let form of document.forms) {
+        if (form.id === "form-dbg") {
+            form.addEventListener("submit", (event) => {
+                event.preventDefault();
+                sendAction("dbgcmd", {command: event.target.elements.dbgcmd.value});
+                event.target.elements.dbgcmd.value = "";
+                followScroll(document.getElementById("weblog"), 0);
+            });
+        } else {
+            form.addEventListener("submit", (event) => {
+                event.preventDefault();
+            });
+        }
     }
-    <!-- endRemoveIf(!rfm69)-->
 
-    $(".gpio-select").each(function(_, elem) {
-        initSelectGPIO(elem)
+    elementSelectorOnClick(".password-reveal", toggleVisiblePassword);
+
+    elementSelectorOnClick(".button-dbg-clear", (event) => {
+        event.preventDefault();
+        document.getElementById("weblog").textContent = "";
     });
 
-    $(document).on("change", "input", hasChanged);
-    $(document).on("change", "select", hasChanged);
+    elementSelectorOnClick(".button-settings-backup", () => {
+        document.getElementById("downloader").click();
+    });
+    elementSelectorOnClick(".button-settings-factory", resetToFactoryDefaults);
+    elementSelectorOnClick(".button-upgrade", handleFirmwareUpgrade);
 
-    $("textarea").on("dblclick", function() { this.select(); });
+    document.getElementById("uploader").addEventListener("change", handleSettingsFile);
+    elementSelectorOnClick(".button-settings-restore", () => {
+        document.getElementById("uploader").click();
+    });
 
+    elementSelectorOnClick(".button-apikey", generateApiKey);
+
+    listenChanged(".settings-group");
+    listenChanged("input,select");
     resetOriginals();
 
-    $(".group-settings").each(function() {
-        groupSettingsObserver.observe(this, {childList: true});
+    elementSelectorOnClick(".button-add-settings-group", groupSettingsAdd);
+
+    groupSettingsOnAdd("networks", () => {
+        wifiNetworkAdd();
     });
+
+    groupSettingsOnAdd("leds", () => {
+        ledAdd();
+    });
+
+    groupSettingsOnAdd("schedules", () => {
+        const type = (event.detail.target === "switch") ? 1 :
+            (event.detail.target === "light") ? 2 :
+            (event.detail.target === "curtain") ? 3 : 0;
+
+        if (type !== 0) {
+            schAdd({schType: type});
+            return;
+        }
+    });
+
+    groupSettingsOnAdd("rpn-rules", () => {
+        rpnAddRule();
+    });
+    groupSettingsOnAdd("rpn-topics", () => {
+        rpnAddTopic();
+    });
+
+    // -----------------------------------------------------------------------------
+
+    // No group handler should be registered after this point, since we depend on the order
+    // of registration to trigger 'after-add' handler and update group attributes *after*
+    // module function finishes modifying the container
+    for (let group of document.querySelectorAll(".settings-group")) {
+        GroupSettingsObserver.observe(group, {childList: true});
+        group.addEventListener("settings-group-add", groupSettingsHandleUpdate, false);
+    }
 
     // don't autoconnect when opening from filesystem
     if (window.location.protocol === "file:") {
+        processData({"webMode": 0});
         return;
     }
 
-    // Check host param in query string
-    var search = new URLSearchParams(window.location.search),
+    // Optionally, support host=... param that could redirect to somewhere else
+    // Note of the Cross-Origin rules that apply, and require device to handle them
+    const search = new URLSearchParams(window.location.search),
         host = search.get("host");
 
     if (host !== null) {
@@ -2241,5 +2732,6 @@ $(function() {
     } else {
         connectToCurrentURL();
     }
+}
 
-});
+document.addEventListener("DOMContentLoaded", main);

@@ -7,11 +7,7 @@
 
 #pragma once
 
-// Set ADC to TOUT pin
-#undef ADC_MODE_VALUE
-#define ADC_MODE_VALUE ADC_TOUT
 
-#include "Arduino.h"
 #include "BaseSensor.h"
 
 #define TMP3X_TMP35                 35
@@ -26,7 +22,7 @@ class TMP3XSensor : public BaseSensor {
         // Public
         // ---------------------------------------------------------------------
 
-        TMP3XSensor(): BaseSensor() {
+        TMP3XSensor() {
             _count = 1;
             _sensor_id = SENSOR_TMP3X_ID;
         }
@@ -47,7 +43,6 @@ class TMP3XSensor : public BaseSensor {
 
         // Initialization method, must be idempotent
         void begin() {
-            pinMode(0, INPUT);
             _ready = true;
         }
 
@@ -59,13 +54,13 @@ class TMP3XSensor : public BaseSensor {
         }
 
         // Descriptive name of the slot # index
-        String slot(unsigned char index) {
+        String description(unsigned char index) {
             return description();
         };
 
         // Address of the sensor (it could be the GPIO or I2C address)
         String address(unsigned char index) {
-            return String("0");
+            return String("A0");
         }
 
         // Type for slot # index

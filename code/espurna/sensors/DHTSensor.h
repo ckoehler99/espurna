@@ -7,7 +7,9 @@
 
 #pragma once
 
-#include "Arduino.h"
+
+#include "../gpio.h"
+#include "../utils.h"
 #include "BaseSensor.h"
 
 constexpr const double DHT_DUMMY_VALUE = -255;
@@ -57,13 +59,13 @@ class DHTSensor : public BaseSensor {
         // Public
         // ---------------------------------------------------------------------
 
-        DHTSensor(): BaseSensor() {
+        DHTSensor() {
             _count = 2;
             _sensor_id = SENSOR_DHTXX_ID;
         }
 
         ~DHTSensor() {
-            if (_previous != GPIO_NONE) gpioReleaseLock(_previous);
+            gpioUnlock(_gpio);
         }
 
         // ---------------------------------------------------------------------
@@ -99,10 +101,13 @@ class DHTSensor : public BaseSensor {
 
             _count = 0;
 
-            // Manage GPIO lock
-            if (_previous != GPIO_NONE) gpioReleaseLock(_previous);
+            // Manage GPIO lock (note that this only handles the basic *hw* I/O)
+            if (_previous != GPIO_NONE) {
+                gpioUnlock(_previous);
+            }
+
             _previous = GPIO_NONE;
-            if (!gpioGetLock(_gpio)) {
+            if (!gpioLock(_gpio)) {
                 _error = SENSOR_ERROR_GPIO_USED;
                 return;
             }
@@ -130,7 +135,7 @@ class DHTSensor : public BaseSensor {
         }
 
         // Descriptive name of the slot # index
-        String slot(unsigned char index) {
+        String description(unsigned char index) {
             return description();
         };
 
